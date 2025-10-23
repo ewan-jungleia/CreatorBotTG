@@ -7,9 +7,6 @@ export default async function handler(req, res) {
     KV_REST_API_TOKEN: !!process.env.KV_REST_API_TOKEN
   };
   let kvOk = false;
-  try {
-    await setJSON("diag:pong", { t: Date.now() });
-    kvOk = !!(await getJSON("diag:pong", null));
-  } catch { kvOk = false; }
-  res.status(200).json({ ok: true, okEnv, kvOk, ts: Date.now() });
+  try { await setJSON("diag:pong",{t:Date.now()}); kvOk = !!(await getJSON("diag:pong",null)); } catch { kvOk=false; }
+  res.status(200).json({ ok:true, okEnv, kvOk, ts: Date.now() });
 }
