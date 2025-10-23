@@ -1,11 +1,9 @@
 {
-  "name": "createur-bot-tg",
+  "name": "creator-bot-tg",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=18" },
   "dependencies": {
-    "jszip": "3.10.1",
-    "openai": "4.55.6"
+    "adm-zip": "0.5.10"
   }
 }

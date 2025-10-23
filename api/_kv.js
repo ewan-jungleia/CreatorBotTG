@@ -1,36 +1,83 @@
-const useMem = !process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN;
-let mem = null; if (useMem) mem = new Map();
+const { KV_REST_API_URL, KV_REST_API_TOKEN } = process.env;
 
-async function httpKV(method, key, value) {
-  const base = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  if (method === "GET") {
-    const r = await fetch(`${base}/get/${encodeURIComponent(key)}`, { headers });
-    if (!r.ok) return null; const data = await r.json(); return data.result ?? null;
-  }
-  if (method === "SET") {
-    const r = await fetch(`${base}/set/${encodeURIComponent(key)}`, { method: "POST", headers, body: JSON.stringify({ value }) });
-    return r.ok;
-  }
-  if (method === "DEL") {
-    const r = await fetch(`${base}/del/${encodeURIComponent(key)}`, { method: "POST", headers });
-    return r.ok;
-  }
-  if (method === "INCRBY") {
-    const r = await fetch(`${base}/incrby/${encodeURIComponent(key)}`, { method: "POST", headers, body: JSON.stringify({ value }) });
-    if (!r.ok) return null; const data = await r.json(); return data.result ?? null;
-  }
-  return null;
+async function kvFetch(path, method = 'GET', body) {
+  const url = `${KV_REST_API_URL}${path}`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error(`KV ${method} ${path} -> ${res.status}`);
+  return res.json();
 }
 
-export const kv = {
-  async get(key){ if (useMem) return mem.has(key)?mem.get(key):null; return await httpKV("GET", key); },
-  async set(key,val){ if (useMem){ mem.set(key,val); return true; } return await httpKV("SET", key, val); },
-  async del(key){ if (useMem){ mem.delete(key); return true; } return await httpKV("DEL", key); },
-  async incrBy(key,value){ if (useMem){ const cur=mem.get(key)||0; const nxt=cur+value; mem.set(key,nxt); return nxt; } return await httpKV("INCRBY", key, value); }
-};
+const NS = 'creatorbottg';
+function k(...parts) { return [NS, ...parts].join(':'); }
 
-export async function getJSON(key, fallback=null){ const raw=await kv.get(key); if (raw==null) return fallback; try { return typeof raw==="string"?JSON.parse(raw):raw; } catch { return fallback; } }
-export async function setJSON(key, obj){ const val=typeof obj==="string"?obj:JSON.stringify(obj); return await kv.set(key, val); }
-export async function delJSON(key){ return await kv.del(key); }
+export async function getJSON(key, fallback = null) {
+  const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
+  if (!r || !('result' in r) || r.result === null) return fallback;
+  try { return JSON.parse(r.result); } catch { return fallback; }
+}
+
+export async function setJSON(key, val, ttlSec) {
+  const body = { value: JSON.stringify(val) };
+  if (ttlSec) body.ttl = ttlSec;
+  await kvFetch(`/set/${encodeURIComponent(key)}`, 'POST', body);
+  return true;
+}
+
+export async function del(key) {
+  await kvFetch(`/del/${encodeURIComponent(key)}`, 'POST');
+  return true;
+}
+
+export function keysForUser() {
+  return {
+    budgetGlobal: k('budget','global'),
+    projectsList: k('projects','list'),
+    project: (pid) => k('project', pid),
+    secretsGlobal: k('secrets','global'),
+    secretsProject: (pid) => k('secrets','project', pid),
+    usageGlobal: k('usage','global'),
+    usageProject: (pid) => k('usage','project', pid)
+  };
+}
+
+export function now(){ return Math.floor(Date.now()/1000); }
+
+export function pricePer1k(){
+  const envP = process.env.PRICE_PER_1K;
+  if (envP) return Number(envP);
+  return 0.005;
+}
+
+export function estimateTokens(str){
+  if (!str) return 0;
+  const chars = [...String(str)].length;
+  return Math.max(1, Math.round(chars/4));
+}
+
+export async function addUsage({ projectId, tokens }) {
+  const userUsageKey = k('usage','global');
+  const projUsageKey = k('usage','project', projectId || 'none');
+  const p = pricePer1k();
+  const euros = (tokens/1000)*p;
+
+  const u = (await getJSON(userUsageKey)) || { tokens:0, euros:0, history:[] };
+  u.tokens += tokens;
+  u.euros = Number((u.euros + euros).toFixed(4));
+  u.history.push({ ts: now(), projectId: projectId || null, tokens, euros: Number(euros.toFixed(4)) });
+  await setJSON(userUsageKey, u);
+
+  const up = (await getJSON(projUsageKey)) || { tokens:0, euros:0, history:[] };
+  up.tokens += tokens;
+  up.euros = Number((up.euros + euros).toFixed(4));
+  up.history.push({ ts: now(), tokens, euros: Number(euros.toFixed(4)) });
+  await setJSON(projUsageKey, up);
+
+  return { euros: Number(euros.toFixed(4)) };
+}

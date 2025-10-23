@@ -1,220 +1,210 @@
-import JSZip from "jszip";
-import OpenAI from "openai";
-import { getJSON, setJSON } from "./_kv.js";
+import { getJSON, setJSON, del, keysForUser, estimateTokens, addUsage, pricePer1k, now } from './_kv.js';
+import AdmZip from 'adm-zip';
 
-const TG = process.env.TELEGRAM_BOT_TOKEN;
-const API = `https://api.telegram.org/bot${TG}`;
-const FILE_API = `https://api.telegram.org/file/bot${TG}`;
-const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const ADMIN_ID = Number(process.env.ADMIN_TELEGRAM_ID || '0');
+const API = `https://api.telegram.org/bot${TOKEN}`;
 
-function j(x){return JSON.stringify(x);}
-async function tg(m,p){const r=await fetch(`${API}/${m}`,{method:"POST",headers:{"Content-Type":"application/json"},body:j(p)});return r.json().catch(()=>({}));}
-async function sendText(id,t,ex={}){return tg("sendMessage",{chat_id:id,text:t,...ex});}
-async function answerCb(cid,t="OK"){return tg("answerCallbackQuery",{callback_query_id:cid,text:t,show_alert:false});}
-async function sendDoc(id,fname,buf,cap=""){const fd=new FormData();fd.append("chat_id",String(id));if(cap)fd.append("caption",cap);fd.append("document",new Blob([buf]),fname);const r=await fetch(`${API}/sendDocument`,{method:"POST",body:fd});return r.json();}
+function isAdmin(id){ return Number(id) === ADMIN_ID; }
 
-async function getState(cid){return (await getJSON(`chat:${cid}`,{phase:"idle"}))||{phase:"idle"};}
-async function setState(cid,st){return setJSON(`chat:${cid}`,st);}
-async function pushMeta(cid,m){const k=`projects:${cid}`;const l=(await getJSON(k,[]))||[];l.push(m);await setJSON(k,l);}
-async function listProjects(cid){return (await getJSON(`projects:${cid}`,[]))||[];}
-
-const MODEL = process.env.CREATOR_MODEL || "gpt-4o-mini";
-const PRICE = { "gpt-4o-mini": 0.15, "gpt-3.5-turbo": 0.02 };
-function costEUR(chars,model=MODEL){const per1k=PRICE[model]??0.15;const tokens=Math.max(1,Math.round(chars/4));return Number(((tokens/1000)*per1k).toFixed(4));}
-
-async function ensureBudget(){const k=`budget:global`;let b=await getJSON(k,null);if(!b){b={spent:0,cap:10,step:1};await setJSON(k,b);}return b;}
-async function addSpend(amount){const k=`budget:global`;const b=await ensureBudget();b.spent=Number((b.spent+amount).toFixed(4));await setJSON(k,b);return b;}
-async function setCap(v){const k=`budget:global`;const b=await ensureBudget();b.cap=Math.max(0,Number(v)||0);await setJSON(k,b);return b;}
-async function setStep(v){const k=`budget:global`;const b=await ensureBudget();b.step=Math.max(0,Number(v)||0);await setJSON(k,b);return b;}
-async function resetSpent(){const k=`budget:global`;const b=await ensureBudget();b.spent=0;await setJSON(k,b);return b;}
-async function getBudget(){return ensureBudget();}
-function budgetText(b){return `Budget global\n- Dépensé: ${b.spent} €\n- Plafond: ${b.cap} €\n- Alerte: ${b.step} €`;}
-
-// === UI ===
-function mainMenu(){return{reply_markup:{inline_keyboard:[
-[{text:"🆕 Nouveau projet",callback_data:"act:new"},{text:"📦 ZIP",callback_data:"act:zip"}],
-[{text:"📂 Projets",callback_data:"act:projects"}],
-[{text:"🔑 Secrets",callback_data:"act:secrets"},{text:"💶 Dépenses",callback_data:"act:budget"}],
-[{text:"🔄 Reset",callback_data:"act:reset"}]
-]}};}
-function confirmKb(){return{reply_markup:{inline_keyboard:[
-[{text:"✅ Valider",callback_data:"act:confirm"}],
-[{text:"✏️ Corriger le brief",callback_data:"act:edit"}],
-[{text:"⬅️ Menu",callback_data:"act:menu"}]
-]}};}
-function budgetMenu(){return{reply_markup:{inline_keyboard:[
-[{text:"➕ Cap +1€",callback_data:"budg:cap+1"},{text:"➕ Cap +5€",callback_data:"budg:cap+5"}],
-[{text:"➖ Cap -1€",callback_data:"budg:cap-1"},{text:"🔁 RAZ dépensé",callback_data:"budg:spent0"}],
-[{text:"⏰ Alerte +1€",callback_data:"budg:step+1"},{text:"⏰ Alerte -1€",callback_data:"budg:step-1"}],
-[{text:"✍️ Saisir Cap",callback_data:"budg:setcap"},{text:"✍️ Saisir Alerte",callback_data:"budg:setstep"}],
-[{text:"⬅️ Retour",callback_data:"act:menu"}]
-]}};}
-
-// === ZIP cible ===
-async function genZip(project){
-  const zip=new JSZip();
-  const readme=`# ${project.title||"Bot Telegram"} (généré par CreatorBot-TG)
-
-## Installation
-1) Crée un projet Vercel.
-2) Ajoute TELEGRAM_BOT_TOKEN (Production).
-3) Déploie.
-4) Webhook:
-   https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<ton-domaine>/api/bot
-
-## Brief
-${project.brief||"(non fourni)"}\n`;
-  const bot=`export default async function handler(req,res){
-  if(req.method!=="POST") return res.status(200).send("OK");
-  try{
-    const u=req.body; const m=u.message||u.edited_message||null; if(!m) return res.status(200).json({ok:true});
-    const chatId=m.chat.id; const t=(m.text||"").trim();
-    const token=process.env.TELEGRAM_BOT_TOKEN; const api="https://api.telegram.org/bot"+token;
-    async function tg(x,p){const r=await fetch(api+"/"+x,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});return r.json();}
-    if(t==="/start"){await tg("sendMessage",{chat_id:chatId,text:"Bot en ligne. /help"});return res.status(200).json({ok:true});}
-    if(t==="/help"){await tg("sendMessage",{chat_id:chatId,text:"Commandes: /start, /help"});return res.status(200).json({ok:true});}
-    await tg("sendMessage",{chat_id:chatId,text:"Reçu: "+(t||"(non-texte)")});return res.status(200).json({ok:true});
-  }catch(e){return res.status(200).json({ok:true,error:String(e)});}
-}`;
-  zip.file("README.md",readme);
-  zip.file("package.json",`{"name":"bot-cible-genere","version":"1.0.0","private":true,"type":"module"}`);
-  zip.folder("api").file("bot.js",bot);
-  zip.file("vercel.json",`{"version":2,"routes":[{"src":"/api/bot","dest":"/api/bot.js"}]}`);
-  return await zip.generateAsync({type:"uint8array"});
+async function reply(chatId, text, kb){
+  const body = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (kb) body.reply_markup = kb;
+  await fetch(`${API}/sendMessage`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
 }
 
-async function refineReadme(brief,base){
-  if(!openai) return base;
-  try{
-    const resp=await openai.chat.completions.create({
-      model:MODEL,temperature:0.2,
-      messages:[
-        {role:"system",content:"Tu écris des README concis et actionnables pour bots Telegram sur Vercel."},
-        {role:"user",content:`Brief:\n${brief}\n\nREADME:\n${base}\n\nAméliore sans rallonger inutilement.`}
-      ]
-    });
-    const out=resp.choices?.[0]?.message?.content||base;
-    await addSpend(costEUR(out.length,MODEL));
-    return out;
-  }catch{ return base; }
+function kb(rows){ return { inline_keyboard: rows }; }
+
+function mainMenu(){
+  return kb([
+    [{ text:'🆕 Nouveau projet', callback_data:'act:new' }, { text:'📁 Projets', callback_data:'act:list' }],
+    [{ text:'💰 Budget', callback_data:'act:budget' }, { text:'🔑 Secrets', callback_data:'act:secrets' }],
+    [{ text:'📦 ZIP', callback_data:'act:zip' }, { text:'♻️ Reset', callback_data:'act:reset' }]
+  ]);
 }
 
-// === Flows ===
-async function onStart(id){await sendText(id,"CreatorBot-TG en ligne ✅\nChoisis une action :",mainMenu());}
-async function onNew(id){const st=await getState(id);st.project={id:`p${Date.now()}`,title:null,brief:null,files:[]};st.phase="ask_title";await setState(id,st);await sendText(id,"Titre du projet ?");}
-
-async function onText(id,txt){
-  const st=await getState(id);
-  if(txt==="/start"||txt==="/menu") return onStart(id);
-
-  if(st.phase==="ask_title"){
-    st.project.title=txt.trim().slice(0,120);
-    st.phase="ask_brief";await setState(id,st);
-    return sendText(id,"Brief du projet ? (tu peux être concis)");
+async function ensureGlobalDefaults(){
+  const keys = keysForUser();
+  const b = await getJSON(keys.budgetGlobal);
+  if (!b){
+    await setJSON(keys.budgetGlobal, { capCents:1000, alertStepCents:100, pPer1k: pricePer1k() });
   }
-  if(st.phase==="ask_brief"){
-    st.project.brief=txt.trim();
-    st.phase="confirm";await setState(id,st);
-    const s=`Résumé :\n- Titre : ${st.project.title}\n- Brief : ${st.project.brief}\n\nValider pour générer le ZIP.`;
-    return sendText(id,s,confirmKb());
-  }
-  if(st.phase==="set_cap"){
-    const b=await setCap(txt.trim());
-    st.phase="idle";await setState(id,st);
-    return sendText(id,budgetText(b),budgetMenu());
-  }
-  if(st.phase==="set_step"){
-    const b=await setStep(txt.trim());
-    st.phase="idle";await setState(id,st);
-    return sendText(id,budgetText(b),budgetMenu());
-  }
-
-  return sendText(id,"Utilise le menu ci-dessous.",mainMenu());
 }
 
-async function onDoc(id,doc){
-  const st=await getState(id);
-  if(st.phase!=="confirm" && st.phase!=="ask_brief" && st.phase!=="ask_title")
-    return sendText(id,"Document reçu (hors flux). Lance un nouveau projet.",mainMenu());
-  const r=await tg("getFile",{file_id:doc.file_id}); const fp=r?.result?.file_path;
-  if(!fp) return sendText(id,"Impossible de récupérer le fichier.",confirmKb());
-  const url=`${FILE_API}/${fp}`; st.project.files=st.project.files||[]; st.project.files.push({name:doc.file_name||"fichier",url}); await setState(id,st);
-  return sendText(id,"Pièce jointe ajoutée: "+(doc.file_name||"fichier"),confirmKb());
+async function handleStart(chatId){
+  await ensureGlobalDefaults();
+  await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
 }
 
-async function onCb(cb){
-  const id = cb?.message?.chat?.id;
-  const data = cb?.data || "";
-  if(!id || !data) { if(cb?.id) await answerCb(cb.id,"OK"); return; }
+function askTitleKB(){ return kb([[{ text:'⬅️ Retour', callback_data:'act:menu' }]]); }
 
-  if(data.startsWith("act:")){
-    const a=data.slice(4);
-    if(a==="menu"){await answerCb(cb.id,"Menu");return onStart(id);}
-    if(a==="new"){await answerCb(cb.id,"Nouveau projet");return onNew(id);}
-    if(a==="projects"){await answerCb(cb.id,"Projets");const l=await listProjects(id);if(!l.length)return sendText(id,"Aucun projet pour l’instant.",mainMenu());return sendText(id,l.map((p,i)=>`${i+1}. ${p.title}`).join("\n"),mainMenu());}
-    if(a==="secrets"){await answerCb(cb.id,"Secrets");const names=Object.keys(process.env).filter(k=>k.endsWith("_API_KEY")||k.endsWith("_BOT_TOKEN"));return sendText(id,"Noms de secrets:\n"+(names.join("\n")||"(aucun)"),mainMenu());}
-    if(a==="budget"){await answerCb(cb.id,"Budget");const b=await getBudget();return sendText(id,budgetText(b),budgetMenu());}
-    if(a==="reset"){await answerCb(cb.id,"Reset");await setJSON(`chat:${id}`,{phase:"idle"});return sendText(id,"Réinitialisé.",mainMenu());}
-    if(a==="zip"){
-      await answerCb(cb.id,"ZIP");
-      const st=await getState(id); const l=await listProjects(id); const last=l[l.length-1]||st.project;
-      if(!last||!last.title) return sendText(id,"Aucun projet disponible.",mainMenu());
-      let buf=await genZip(last);
-      // Option: refine README si clé dispo
-      const z1=await JSZip.loadAsync(buf); const z2=new JSZip();
-      for(const n of Object.keys(z1.files)){const f=z1.files[n];const c=await f.async("uint8array");z2.file(n,c);}
-      buf=await z2.generateAsync({type:"uint8array"});
-      await sendDoc(id,`${last.title||"projet"}-squelette.zip`,buf,"Archive prête à déployer.");
-      return;
-    }
-    return answerCb(cb.id,"OK");
+async function askNewProjectTitle(chatId){
+  const keys = keysForUser();
+  await setJSON(keys.project('tmp'), { step:'title' }, 600);
+  await reply(chatId, 'Titre du projet ?', askTitleKB());
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+
+function summarizePrompt(p){
+  const lines = String(p).split('\n').map(l=>l.trim()).filter(Boolean);
+  return lines.slice(0,10).join('\n').slice(0,700);
+}
+
+async function handleText(chatId, fromId, text){
+  if (!isAdmin(fromId)) return;
+  const keys = keysForUser();
+  const tmp = await getJSON(keys.project('tmp'));
+  if (tmp && tmp.step === 'title'){
+    tmp.title = text.trim(); tmp.step='budget';
+    await setJSON(keys.project('tmp'), tmp, 900);
+    const kbBudget = kb([
+      [{ text:'Cap 10€', callback_data:'np:cap:1000' }, { text:'Cap 20€', callback_data:'np:cap:2000' }],
+      [{ text:'Alerte 1€', callback_data:'np:alert:100' }, { text:'Alerte 2€', callback_data:'np:alert:200' }],
+      [{ text:'OK', callback_data:'np:budget:ok' }, { text:'⬅️ Annuler', callback_data:'act:menu' }]
+    ]);
+    await reply(chatId, `Budget pour <b>${escapeHtml(tmp.title)}</b> ?`, kbBudget);
+    return;
   }
-
-  if(data.startsWith("budg:")){
-    const op=data.slice(5);
-    if(op==="setcap"){await answerCb(cb.id,"Saisir Cap");const st=await getState(id);st.phase="set_cap";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur du Plafond (euros).");}
-    if(op==="setstep"){await answerCb(cb.id,"Saisir Alerte");const st=await getState(id);st.phase="set_step";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur de l’alerte (euros).");}
-    if(op==="spent0"){await answerCb(cb.id,"RAZ");const b=await resetSpent();return sendText(id,budgetText(b),budgetMenu());}
-    if(/^cap[+\-]\d+$/.test(op)){const d=Number(op.replace("cap",""));const b=await getBudget();b.cap=Math.max(0,Number((b.cap+d).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Cap modifié");return sendText(id,budgetText(b),budgetMenu());}
-    if(/^step[+\-]\d+$/.test(op)){const d=Number(op.replace("step",""));const b=await getBudget();b.step=Math.max(0,Number((b.step+d).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Alerte modifiée");return sendText(id,budgetText(b),budgetMenu());}
-    return answerCb(cb.id,"OK");
+  if (tmp && tmp.step === 'prompt'){
+    tmp.prompt = text; tmp.step='confirm';
+    await setJSON(keys.project('tmp'), tmp, 900);
+    const summary = summarizePrompt(text);
+    await reply(chatId, `Résumé compris :\n\n${escapeHtml(summary)}\n\nValider ?`,
+      kb([[{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier', callback_data:'np:confirm:no' }],
+          [{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
+    return;
   }
+}
 
-  if(data==="confirm"||data==="act:confirm"){
-    await answerCb(cb.id,"Validation…");
-    const st=await getState(id); const proj=st.project;
-    if(!proj?.title) return sendText(id,"Projet incomplet.",mainMenu());
-    let buf=await genZip(proj);
-    const refined=await refineReadme(proj.brief||"","README généré.");
-    const z1=await JSZip.loadAsync(buf); const z2=new JSZip();
-    for(const n of Object.keys(z1.files)){
-      const f=z1.files[n]; const c=await f.async("uint8array");
-      if(n==="README.md") z2.file(n,new TextEncoder().encode(refined)); else z2.file(n,c);
-    }
-    buf=await z2.generateAsync({type:"uint8array"});
-    await sendDoc(id,`${proj.title||"projet"}-squelette.zip`,buf,"Archive prête à déployer.");
-    await pushMeta(id,{title:proj.title,brief:proj.brief,files:proj.files||[],ts:Date.now()});
-    st.phase="idle"; await setState(id,st);
-    return sendText(id,"Projet livré ✅",mainMenu());
+async function listProjects(chatId){
+  const keys = keysForUser();
+  const list = (await getJSON(keys.projectsList)) || [];
+  if (!list.length){
+    await reply(chatId, 'Aucun projet. Lance un nouveau projet.',
+      kb([[{ text:'🆕 Nouveau projet', callback_data:'act:new' }],
+          [{ text:'⬅️ Retour', callback_data:'act:menu' }]]));
+    return;
   }
+  const rows = list.map(p => [{ text:`📁 ${p.title} (${p.id})`, callback_data:`prj:open:${p.id}` }]);
+  rows.push([{ text:'⬅️ Retour', callback_data:'act:menu' }]);
+  await reply(chatId, 'Projets :', kb(rows));
+}
 
-  await answerCb(cb.id,"OK");
+async function openProject(chatId, pid){
+  const keys = keysForUser();
+  const p = await getJSON(keys.project(pid));
+  if (!p){ await reply(chatId,'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]])); return; }
+  const rows = [
+    [{ text:'▶️ Reprendre', callback_data:`prj:resume:${pid}` }, { text:'📦 ZIP', callback_data:`prj:zip:${pid}` }],
+    [{ text:'🔑 Secrets', callback_data:`prj:secrets:${pid}` }, { text:'🗑️ Supprimer', callback_data:`prj:del:${pid}` }],
+    [{ text:'⬅️ Retour', callback_data:'act:list' }]
+  ];
+  await reply(chatId, `Projet <b>${escapeHtml(p.title)}</b>\nVersion: ${p.version || 'v1'}\nStatus: ${p.status || 'draft'}`, kb(rows));
+}
+
+function fmtEurosCents(cents){ return `${(cents/100).toFixed(2).replace('.',',')} €`; }
+
+async function handleBudgetMenu(chatId){
+  const keys = keysForUser();
+  const u = (await getJSON('creatorbottg:usage:global')) || { tokens:0, euros:0 };
+  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
+  const txt = `Budget global\n- Dépensé: ${(u.euros||0).toFixed(4)} €  (${u.tokens||0} tokens)\n- Cap: ${fmtEurosCents(b.capCents)}\n- Alerte: ${fmtEurosCents(b.alertStepCents)}\n- Prix/1k tokens: ${pricePer1k()} €`;
+  const rows = [
+    [{ text:'Cap +1€', callback_data:'bdg:cap:+100' }, { text:'Cap -1€', callback_data:'bdg:cap:-100' }],
+    [{ text:'Alerte +1€', callback_data:'bdg:al:+100' }, { text:'Alerte -1€', callback_data:'bdg:al:-100' }],
+    [{ text:'RAZ dépense (manuelle)', callback_data:'bdg:raz' }],
+    [{ text:'⬅️ Retour', callback_data:'act:menu' }]
+  ];
+  await reply(chatId, txt, kb(rows));
+}
+
+async function adjustBudget(chatId, kind, delta){
+  const keys = keysForUser();
+  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
+  if (kind === 'cap') b.capCents = Math.max(0, (b.capCents||0) + delta);
+  if (kind === 'al')  b.alertStepCents = Math.max(0, (b.alertStepCents||0) + delta);
+  await setJSON(keys.budgetGlobal, b);
+  await handleBudgetMenu(chatId);
+}
+
+async function resetSpent(chatId){
+  await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] });
+  await reply(chatId, 'Dépense globale remise à zéro.', kb([[{ text:'⬅️ Retour', callback_data:'act:budget' }]]));
+}
+
+async function makeZipForProject(project){
+  const zip = new AdmZip();
+  const readme = `# ${project.title}\n\nVersion: ${project.version}\n\n## Déploiement rapide (Vercel)\n1) Crée un projet Vercel\n2) Ajoute les variables d'environnement\n3) Déploie\n`;
+  zip.addFile('README.md', Buffer.from(readme, 'utf-8'));
+  const botjs = `export default async function handler(req,res){res.status(200).json({ok:true,message:"${project.title} bot ready"})}`;
+  zip.addFile('api/bot.js', Buffer.from(botjs, 'utf-8'));
+  return zip.toBuffer();
+}
+
+async function sendZip(chatId, buffer, filename){
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('document', new Blob([buffer]), filename);
+  await fetch(`${API}/sendDocument`, { method:'POST', body: form });
+}
+
+async function buildZip(chatId, pid){
+  const p = await getJSON(`creatorbottg:project:${pid}`);
+  if (!p){ await reply(chatId,'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]])); return; }
+  const buf = await makeZipForProject(p);
+  await sendZip(chatId, buf, `${p.title.replace(/\s+/g,'_')}_${p.version||'v1'}.zip`);
+  const tokens = 300;
+  const { euros } = await addUsage({ projectId: pid, tokens });
+  await reply(chatId, `ZIP généré ✅\nCoût estimé: ${euros.toFixed(4)} €`, kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
+}
+
+async function handleCallback(chatId, fromId, data){
+  if (!isAdmin(fromId)) return;
+
+  if (data === 'act:menu') return handleStart(chatId);
+  if (data === 'act:new')  return askNewProjectTitle(chatId);
+  if (data === 'act:list') return listProjects(chatId);
+  if (data === 'act:budget') return handleBudgetMenu(chatId);
+  if (data === 'act:reset') { await ensureGlobalDefaults(); return handleStart(chatId); }
 }
 
 export default async function handler(req,res){
+  if (req.method === 'GET') return res.status(200).send('OK');
+  if (req.method !== 'POST') return res.status(405).json({ ok:false });
+
   try{
-    if(req.method!=="POST") return res.status(200).send("OK");
-    const u=req.body||{};
-    const m=u.message||u.edited_message||null;
-    if(m){
-      const id=m.chat.id;
-      if(m.text){ await onText(id, (m.text||"").trim()); return res.status(200).json({ok:true}); }
-      if(m.document){ await onDoc(id, m.document); return res.status(200).json({ok:true}); }
-      await sendText(id,"Message non géré.",mainMenu()); return res.status(200).json({ok:true});
+    const update = req.body || {};
+    const msg = update.message;
+    const cb  = update.callback_query;
+
+    if (msg && msg.text){
+      const fromId = msg.from?.id || msg.chat?.id;
+      if (!isAdmin(fromId)){ await reply(msg.chat.id,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      if (msg.text === '/start') await handleStart(msg.chat.id);
+      else await handleText(msg.chat.id, fromId, msg.text);
+      return res.json({ ok:true });
     }
-    if(u.callback_query){ await onCb(u.callback_query); return res.status(200).json({ok:true}); }
-    return res.status(200).json({ok:true});
+
+    if (cb){
+      const chatId = cb.message?.chat?.id;
+      const fromId = cb.from?.id;
+      if (!isAdmin(fromId)){ await reply(chatId,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      await handleCallback(chatId, fromId, cb.data || '');
+      await fetch(`${API}/answerCallbackQuery`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ callback_query_id: cb.id })
+      });
+      return res.json({ ok:true });
+    }
+
+    return res.json({ ok:true });
   }catch(e){
-    return res.status(200).json({ok:true,error:String(e)});
+    return res.status(200).json({ ok:true, error: String(e) });
   }
 }
