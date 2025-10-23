@@ -1,85 +1,151 @@
-import { getJSON, setJSON, del, keysForUser, pricePer1k } from './_kv.js';
+import { getJSON, setJSON, del, keysForUser, estimateTokens, addUsage, pricePer1k, now } from './_kv.js';
+import AdmZip from 'adm-zip';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_ID = Number(process.env.ADMIN_TELEGRAM_ID || '7587681603');
+const ADMIN_ID = Number(process.env.ADMIN_TELEGRAM_ID || '0');
 const API = `https://api.telegram.org/bot${TOKEN}`;
 
 function isAdmin(id){ return Number(id) === ADMIN_ID; }
 function kb(rows){ return { inline_keyboard: rows }; }
-function esc(s){ return String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-async function reply(chatId, text, keyboard){
-  const body = { chat_id: chatId, text, parse_mode:'HTML' };
-  if (keyboard) body.reply_markup = keyboard;
-  await fetch(`${API}/sendMessage`, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
-  });
+async function reply(chatId, text, markup){
+  const body = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (markup) body.reply_markup = markup;
+  await fetch(`${API}/sendMessage`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
 }
 
 function mainMenu(){
   return kb([
     [{ text:'🆕 Nouveau projet', callback_data:'act:new' }, { text:'📁 Projets', callback_data:'act:list' }],
-    [{ text:'💰 Budget',         callback_data:'act:budget' }, { text:'🔑 Secrets', callback_data:'act:secrets' }],
-    [{ text:'📦 ZIP',            callback_data:'act:zip' },    { text:'♻️ Reset',   callback_data:'act:reset'  }]
+    [{ text:'💰 Budget', callback_data:'act:budget' }, { text:'🔑 Secrets', callback_data:'act:secrets' }],
+    [{ text:'📦 ZIP', callback_data:'act:zip' }, { text:'♻️ Reset', callback_data:'act:reset' }]
   ]);
 }
 
-async function ensureGlobalDefaults(){
-  const keys = keysForUser();
+/* ===== Budget global ===== */
+function fmtCents(c){ return `${(c/100).toFixed(2).replace('.',',')} €`; }
+
+async function ensureBudgetDefaults(userId){
+  const keys = keysForUser(userId);
   const b = await getJSON(keys.budgetGlobal);
-  if (!b){
-    await setJSON(keys.budgetGlobal, { capCents: 0, alertStepCents: 0, pPer1k: pricePer1k() });
-  }
+  if (!b) await setJSON(keys.budgetGlobal, { capCents: 0, alertStepCents: 0, pPer1k: pricePer1k() });
 }
 
-async function handleStart(chatId){
-  await ensureGlobalDefaults();
-  await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
+async function showBudget(chatId, userId){
+  const keys = keysForUser(userId);
+  const u = (await getJSON('creatorbottg:usage:global')) || { tokens:0, euros:0 };
+  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
+  const txt = `Budget global
+- Dépensé: ${(u.euros||0).toFixed(4)} €  (${u.tokens||0} tokens)
+- Cap: ${fmtCents(b.capCents||0)}
+- Alerte: ${fmtCents(b.alertStepCents||0)}
+- Prix/1k: ${pricePer1k()} €`;
+  const rows = [
+    [{ text:'Cap +1€', callback_data:'bdg:cap:+100' }, { text:'Cap -1€', callback_data:'bdg:cap:-100' }],
+    [{ text:'Alerte +1€', callback_data:'bdg:al:+100' }, { text:'Alerte -1€', callback_data:'bdg:al:-100' }],
+    [{ text:'RAZ dépense', callback_data:'bdg:raz' }],
+    [{ text:'⬅️ Retour', callback_data:'act:menu' }]
+  ];
+  await reply(chatId, txt, kb(rows));
 }
 
-/* ===== NOUVEAU PROJET (FSM par utilisateur) ===== */
-
-async function askNewProjectTitle(chatId, uid){
-  const keys = keysForUser();
-  await setJSON(keys.tmp(uid), { step:'title' }, 900);
-  await reply(chatId, 'Titre du projet ?', kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]));
+async function budgetAdjust(userId, kind, delta){
+  const keys = keysForUser(userId);
+  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
+  if (kind === 'cap') b.capCents = Math.max(0, (b.capCents||0) + delta);
+  if (kind === 'al')  b.alertStepCents = Math.max(0, (b.alertStepCents||0) + delta);
+  await setJSON(keys.budgetGlobal, b);
 }
 
-async function handleText(chatId, fromId, text){
-  if (!isAdmin(fromId)) return;
-  const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(fromId));
+async function budgetResetSpend(){
+  await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] });
+}
 
-  // 1) Titre -> Budget preset
-  if (tmp?.step === 'title'){
-    const title = text.trim();
-    const next = { step:'budget', title, capCents: 0, alertCents: 0 };
-    await setJSON(keys.tmp(fromId), next, 1200);
-    const kbBudget = kb([
-      [{ text:'Cap +1€', callback_data:'np:cap:+100' }, { text:'Cap -1€', callback_data:'np:cap:-100' }],
-      [{ text:'Alerte +1€', callback_data:'np:alert:+100' }, { text:'Alerte -1€', callback_data:'np:alert:-100' }],
-      [{ text:'Valider budget', callback_data:'np:budget:ok' }],
+/* ===== Assistant Nouveau Projet ===== */
+function askTitleKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
+
+async function askNewProjectTitle(chatId, userId){
+  const keys = keysForUser(userId);
+  await setJSON(keys.tmp, { step:'title' }, 900);
+  await reply(chatId, 'Titre du projet ?', askTitleKB());
+}
+
+function npBudgetKB(){
+  return kb([
+    [{ text:'Cap 10€', callback_data:'np:cap:1000' }, { text:'Cap 20€', callback_data:'np:cap:2000' }],
+    [{ text:'Alerte 1€', callback_data:'np:al:100' }, { text:'Alerte 2€', callback_data:'np:al:200' }],
+    [{ text:'Valider budget', callback_data:'np:budget:ok' }],
+    [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+  ]);
+}
+
+async function afterTitleShowBudget(chatId, userId){
+  const keys = keysForUser(userId);
+  const tmp = await getJSON(keys.tmp);
+  const cap = tmp?.capCents || 0;
+  const al  = tmp?.alertStepCents || 0;
+  const txt = `Budget pour <b>${esc(tmp?.title||'')}</b>
+- Cap provisoire: ${fmtCents(cap)}
+- Alerte provisoire: ${fmtCents(al)}`;
+  await reply(chatId, txt, npBudgetKB());
+}
+
+async function askPrompt(chatId, userId){
+  const keys = keysForUser(userId);
+  const tmp = await getJSON(keys.tmp);
+  tmp.step = 'prompt';
+  await setJSON(keys.tmp, tmp, 1800);
+  await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
+}
+
+function summarizePrompt(p){
+  const lines = String(p).split('\n').map(l=>l.trim()).filter(Boolean);
+  return lines.slice(0,10).join('\n').slice(0,700);
+}
+
+async function confirmPrompt(chatId, userId){
+  const keys = keysForUser(userId);
+  const tmp = await getJSON(keys.tmp);
+  const summary = summarizePrompt(tmp.prompt || '');
+  tmp.step = 'confirm';
+  await setJSON(keys.tmp, tmp, 1800);
+  await reply(
+    chatId,
+    `Résumé compris :\n\n${esc(summary)}\n\nValider ?`,
+    kb([
+      [{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier', callback_data:'np:confirm:no' }],
       [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
-    ]);
-    await reply(chatId, `Budget pour <b>${esc(title)}</b>\nAjuste puis “Valider budget”.`, kbBudget);
-    return;
-  }
-
-  // 2) Prompt -> Confirm
-  if (tmp?.step === 'prompt'){
-    const next = { ...tmp, step:'confirm', prompt: text };
-    await setJSON(keys.tmp(fromId), next, 1800);
-    const kbConfirm = kb([
-      [{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier le prompt', callback_data:'np:confirm:no' }],
-      [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
-    ]);
-    await reply(chatId, `Résumé compris (aperçu) :\n\n${esc(String(text).slice(0,700))}\n\nValider ?`, kbConfirm);
-    return;
-  }
+    ])
+  );
 }
 
-async function listProjects(chatId){
-  const keys = keysForUser();
+async function createProjectFromTmp(chatId, userId){
+  const keys = keysForUser(userId);
+  const tmp = await getJSON(keys.tmp);
+  const list = (await getJSON(keys.projectsList)) || [];
+
+  const pid = String(Date.now());
+  const project = {
+    id: pid,
+    title: tmp.title,
+    version: 'v1',
+    status: 'draft',
+    budget: { capCents: tmp.capCents||0, alertStepCents: tmp.alertStepCents||0 },
+    prompt: tmp.prompt || ''
+  };
+
+  await setJSON(keys.project(pid), project);
+  list.unshift({ id: pid, title: project.title, createdAt: now(), version: project.version });
+  await setJSON(keys.projectsList, list);
+  await del(keys.tmp);
+
+  await reply(chatId, `✅ Projet <b>${esc(project.title)}</b> créé.\nRetrouve-le dans 📁 Projets.`, kb([[{ text:'📁 Projets', callback_data:'act:list' }],[{ text:'⬅️ Menu', callback_data:'act:menu' }]]));
+}
+
+/* ===== Projets ===== */
+async function listProjects(chatId, userId){
+  const keys = keysForUser(userId);
   const list = (await getJSON(keys.projectsList)) || [];
   if (!list.length){
     await reply(chatId, 'Aucun projet. Lance un nouveau projet.',
@@ -91,148 +157,103 @@ async function listProjects(chatId){
   await reply(chatId, 'Projets :', kb(rows));
 }
 
-async function openProject(chatId, pid){
-  const keys = keysForUser();
+async function openProject(chatId, userId, pid){
+  const keys = keysForUser(userId);
   const p = await getJSON(keys.project(pid));
-  if (!p){
-    await reply(chatId, 'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]]));
-    return;
-  }
+  if (!p){ await reply(chatId,'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]])); return; }
   const rows = [
-    [{ text:'▶️ Reprendre', callback_data:`prj:resume:${pid}` }, { text:'🔑 Secrets', callback_data:`prj:secrets:${pid}` }],
-    [{ text:'🗑️ Supprimer', callback_data:`prj:del:${pid}` }],
+    [{ text:'▶️ Reprendre', callback_data:`prj:resume:${pid}` }, { text:'📦 ZIP', callback_data:`prj:zip:${pid}` }],
+    [{ text:'🔑 Secrets', callback_data:`prj:secrets:${pid}` }, { text:'🗑️ Supprimer', callback_data:`prj:del:${pid}` }],
     [{ text:'⬅️ Retour', callback_data:'act:list' }]
   ];
   await reply(chatId, `Projet <b>${esc(p.title)}</b>\nVersion: ${p.version || 'v1'}\nStatus: ${p.status || 'draft'}`, kb(rows));
 }
 
-/* ===== BUDGET GLOBAL ===== */
-
-function fmtEuro(cents){ return (cents/100).toFixed(2).replace('.',',') + ' €'; }
-
-async function showBudget(chatId){
-  const keys = keysForUser();
-  const usage = (await getJSON('creatorbottg:usage:global')) || { tokens:0, euros:0 };
-  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
-  const txt = `Budget global
-- Dépensé: ${(usage.euros||0).toFixed(4)} €  (${usage.tokens||0} tokens)
-- Cap: ${fmtEuro(b.capCents||0)}
-- Alerte: ${fmtEuro(b.alertStepCents||0)}
-- Prix/1k: ${pricePer1k()} €`;
-  const rows = [
-    [{ text:'Cap +1€', callback_data:'bdg:cap:+100' }, { text:'Cap -1€', callback_data:'bdg:cap:-100' }],
-    [{ text:'Alerte +1€', callback_data:'bdg:al:+100' }, { text:'Alerte -1€', callback_data:'bdg:al:-100' }],
-    [{ text:'RAZ dépense', callback_data:'bdg:raz' }],
-    [{ text:'⬅️ Retour', callback_data:'act:menu' }]
-  ];
-  await reply(chatId, txt, kb(rows));
+/* ===== ZIP minimal (placeholder) ===== */
+async function makeZipForProject(project){
+  const zip = new AdmZip();
+  const readme = `# ${project.title}\n\nVersion: ${project.version}\n\n## Déploiement rapide (Vercel)\n1) Crée un projet Vercel\n2) Ajoute les variables d'environnement\n3) Déploie\n`;
+  zip.addFile('README.md', Buffer.from(readme, 'utf-8'));
+  const botjs = `export default async function handler(req,res){res.status(200).json({ok:true,message:"${project.title} bot ready"})}`;
+  zip.addFile('api/bot.js', Buffer.from(botjs, 'utf-8'));
+  return zip.toBuffer();
 }
 
-async function adjustBudget(chatId, kind, delta){
-  const keys = keysForUser();
-  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
-  if (kind === 'cap') b.capCents = Math.max(0, (b.capCents||0) + delta);
-  if (kind === 'al')  b.alertStepCents = Math.max(0, (b.alertStepCents||0) + delta);
-  await setJSON(keys.budgetGlobal, b);
-  await showBudget(chatId);
+async function sendZip(chatId, buffer, filename){
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('document', new Blob([buffer]), filename);
+  await fetch(`${API}/sendDocument`, { method:'POST', body: form });
 }
 
-async function resetSpent(chatId){
-  await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] });
-  await showBudget(chatId);
+/* ===== Entrées utilisateur ===== */
+async function handleStart(chatId, userId){
+  await ensureBudgetDefaults(userId);
+  await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
 }
 
-/* ===== CALLBACKS ===== */
+async function handleText(chatId, userId, text){
+  const keys = keysForUser(userId);
+  const tmp = await getJSON(keys.tmp);
 
-async function handleCallback(chatId, fromId, data){
-  if (!isAdmin(fromId)) return;
-
-  if (data === 'act:menu')   return handleStart(chatId);
-  if (data === 'act:new')    return askNewProjectTitle(chatId, fromId);
-  if (data === 'act:list')   return listProjects(chatId);
-  if (data === 'act:budget') return showBudget(chatId);
-  if (data === 'act:reset')  { await ensureGlobalDefaults(); return handleStart(chatId); }
-
-  // Budget adjustments
-  if (data.startsWith('bdg:')){
-    const [, kind, deltaStr] = data.split(':'); // e.g. bdg:cap:+100
-    if (kind === 'raz') return resetSpent(chatId);
-    const delta = Number(deltaStr);
-    return adjustBudget(chatId, kind, delta);
-  }
-
-  // Nouveau projet - budget step
-  if (data.startsWith('np:')){
-    const tmpKey = keysForUser().tmp(fromId);
-    const tmp = (await getJSON(tmpKey)) || {};
-    const parts = data.split(':'); // np:cap:+100 / np:alert:-100 / np:budget:ok / np:confirm:yes
-    if (parts[1] === 'cap'){
-      tmp.capCents = Math.max(0, (tmp.capCents || 0) + Number(parts[2]));
-      await setJSON(tmpKey, tmp, 1200);
-      return askBudgetRefresh(chatId, tmp);
-    }
-    if (parts[1] === 'alert'){
-      tmp.alertCents = Math.max(0, (tmp.alertCents || 0) + Number(parts[2]));
-      await setJSON(tmpKey, tmp, 1200);
-      return askBudgetRefresh(chatId, tmp);
-    }
-    if (parts[1] === 'budget' && parts[2] === 'ok'){
-      tmp.step = 'prompt';
-      await setJSON(tmpKey, tmp, 1800);
-      return reply(chatId, 'Envoie maintenant le prompt principal (description complète du projet).',
-        kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
-    }
-    if (parts[1] === 'confirm'){
-      if (parts[2] === 'yes'){
-        // crée le projet
-        const keys = keysForUser();
-        const id = String(Date.now());
-        const proj = {
-          id, title: tmp.title, prompt: tmp.prompt,
-          capCents: tmp.capCents || 0, alertCents: tmp.alertCents || 0,
-          version: 'v1', status: 'draft', createdAt: Date.now()
-        };
-        const list = (await getJSON(keys.projectsList)) || [];
-        list.unshift({ id, title: proj.title, createdAt: proj.createdAt });
-        await setJSON(keys.projectsList, list);
-        await setJSON(keys.project(id), proj);
-        await del(tmpKey);
-        await reply(chatId, `✅ Projet <b>${esc(proj.title)}</b> créé.\nTu peux le retrouver dans “📁 Projets”.`, kb([[{ text:'📁 Ouvrir mes projets', callback_data:'act:list' }],[{ text:'⬅️ Menu', callback_data:'act:menu' }]]));
-        return;
-      } else {
-        // retour à prompt
-        tmp.step = 'prompt';
-        await setJSON(keysForUser().tmp(fromId), tmp, 1200);
-        return reply(chatId, 'Ré-envoie le prompt principal.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
-      }
-    }
+  if (tmp && tmp.step === 'title'){
+    tmp.title = text.trim();
+    tmp.step  = 'budget';
+    await setJSON(keys.tmp, tmp, 1800);
+    await afterTitleShowBudget(chatId, userId);
     return;
   }
 
-  // Projets
+  if (tmp && tmp.step === 'prompt'){
+    tmp.prompt = text;
+    await setJSON(keys.tmp, tmp, 1800);
+    await confirmPrompt(chatId, userId);
+    return;
+  }
+
+  await reply(chatId, 'Utilise le menu ci-dessous.', mainMenu());
+}
+
+async function handleCallback(chatId, userId, data){
+  if (data === 'act:menu')   return handleStart(chatId, userId);
+  if (data === 'act:new')    return askNewProjectTitle(chatId, userId);
+  if (data === 'act:list')   return listProjects(chatId, userId);
+  if (data === 'act:budget') return showBudget(chatId, userId);
+  if (data === 'act:reset')  { await ensureBudgetDefaults(userId); return handleStart(chatId, userId); }
+
+  if (data.startsWith('bdg:')){
+    const [, kind, deltaStr] = data.split(':');
+    if (kind === 'raz'){ await budgetResetSpend(); return showBudget(chatId, userId); }
+    const delta = Number(deltaStr);
+    if (kind === 'cap' || kind === 'al'){
+      await budgetAdjust(userId, kind, delta);
+      return showBudget(chatId, userId);
+    }
+  }
+
+  if (data.startsWith('np:')){
+    const keys = keysForUser(userId);
+    const tmp = (await getJSON(keys.tmp)) || {};
+    const [, kind, valStr] = data.split(':');
+
+    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'al'){  tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'budget' && valStr === 'ok'){ return askPrompt(chatId, userId); }
+    if (kind === 'confirm'){
+      if (valStr === 'yes') return createProjectFromTmp(chatId, userId);
+      if (valStr === 'no'){ tmp.step='prompt'; await setJSON(keys.tmp, tmp, 1800); return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]])); }
+    }
+  }
+
   if (data.startsWith('prj:')){
     const [, act, pid] = data.split(':');
-    if (act === 'open')   return openProject(chatId, pid);
-    if (act === 'del')    { await del(keysForUser().project(pid)); return listProjects(chatId); }
+    if (act === 'open')   return openProject(chatId, userId, pid);
     if (act === 'resume') return reply(chatId, 'Mode assistant de reprise à venir.', kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
     if (act === 'secrets')return reply(chatId, 'Secrets par projet (édition à venir).', kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
   }
 }
 
-async function askBudgetRefresh(chatId, tmp){
-  const kbBudget = kb([
-    [{ text:`Cap ${fmtEuro(tmp.capCents||0)}`, callback_data:'np:noop' }],
-    [{ text:'Cap +1€', callback_data:'np:cap:+100' }, { text:'Cap -1€', callback_data:'np:cap:-100' }],
-    [{ text:`Alerte ${fmtEuro(tmp.alertCents||0)}`, callback_data:'np:noop' }],
-    [{ text:'Alerte +1€', callback_data:'np:alert:+100' }, { text:'Alerte -1€', callback_data:'np:alert:-100' }],
-    [{ text:'Valider budget', callback_data:'np:budget:ok' }],
-    [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
-  ]);
-  await reply(chatId, `Budget pour <b>${esc(tmp.title||'')}</b>`, kbBudget);
-}
-
-/* ===== HTTP ENTRY ===== */
-
+/* ===== HTTP entry ===== */
 export default async function handler(req,res){
   if (req.method === 'GET') return res.status(200).send('OK');
   if (req.method !== 'POST') return res.status(405).json({ ok:false });
@@ -245,7 +266,7 @@ export default async function handler(req,res){
     if (msg && msg.text){
       const fromId = msg.from?.id || msg.chat?.id;
       if (!isAdmin(fromId)){ await reply(msg.chat.id,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
-      if (msg.text === '/start') await handleStart(msg.chat.id);
+      if (msg.text === '/start') await handleStart(msg.chat.id, fromId);
       else await handleText(msg.chat.id, fromId, msg.text);
       return res.json({ ok:true });
     }
@@ -255,10 +276,7 @@ export default async function handler(req,res){
       const fromId = cb.from?.id;
       if (!isAdmin(fromId)){ await reply(chatId,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
       await handleCallback(chatId, fromId, cb.data || '');
-      await fetch(`${API}/answerCallbackQuery`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ callback_query_id: cb.id })
-      });
+      await fetch(`${API}/answerCallbackQuery`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ callback_query_id: cb.id }) });
       return res.json({ ok:true });
     }
 

@@ -35,14 +35,16 @@ export async function del(key) {
   return true;
 }
 
-export function keysForUser() {
+export function keysForUser(userId) {
   return {
     budgetGlobal: k('budget','global'),
     projectsList: k('projects','list'),
     project: (pid) => k('project', pid),
-    tmp: (uid) => k('tmp', uid),
+    secretsGlobal: k('secrets','global'),
+    secretsProject: (pid) => k('secrets','project', pid),
     usageGlobal: k('usage','global'),
-    usageProject: (pid) => k('usage','project', pid)
+    usageProject: (pid) => k('usage','project', pid),
+    tmp: k('tmp', String(userId))
   };
 }
 
