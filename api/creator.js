@@ -1,15 +1,13 @@
-import { getJSON, setJSON, del, keysForUser, addUsage, pricePer1k, now, k } from './_kv.js';
+import { getJSON, setJSON, del, keysForUser, addUsage, pricePer1k } from './_kv.js';
 import AdmZip from 'adm-zip';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_TELEGRAM_ID || '0');
 const API = `https://api.telegram.org/bot${TOKEN}`;
-const memFSM = new Map(); // cache mémoire d’état
 
 function isAdmin(id){ return Number(id) === ADMIN_ID; }
 function kb(rows){ return { inline_keyboard: rows }; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
-function fmtEurosCents(c){ return `${((c||0)/100).toFixed(2).replace('.',',')} €`; }
 
 async function reply(chatId, text, markup){
   const body = { chat_id: chatId, text, parse_mode: 'HTML' };
@@ -20,186 +18,264 @@ async function reply(chatId, text, markup){
 function mainMenu(){
   return kb([
     [{ text:'🆕 Nouveau projet', callback_data:'act:new' }, { text:'📁 Projets', callback_data:'act:list' }],
-    [{ text:'💰 Budget', callback_data:'act:budget' }, { text:'📦 ZIP', callback_data:'act:zip-hint' }],
-    [{ text:'🔑 Secrets', callback_data:'act:secrets' }, { text:'Reset', callback_data:'act:reset' }]
+    [{ text:'💰 Budget', callback_data:'act:budget' }, { text:'🔑 Secrets', callback_data:'act:secrets' }],
+    [{ text:'📦 ZIP', callback_data:'act:zip' }, { text:'♻️ Reset', callback_data:'act:reset' }]
   ]);
 }
 
 async function ensureGlobalDefaults(){
   const keys = keysForUser();
   const b = await getJSON(keys.budgetGlobal);
-  if (!b) await setJSON(keys.budgetGlobal, { capCents: 1000, alertStepCents: 100, pPer1k: pricePer1k() });
-  const u = await getJSON(k('usage','global'));
-  if (!u) await setJSON(k('usage','global'), { tokens:0, euros:0, history:[] });
+  if (!b){
+    await setJSON(keys.budgetGlobal, { capCents:1000, alertStepCents:100, pPer1k: pricePer1k() });
+  }
 }
 
 async function handleStart(chatId){
   await ensureGlobalDefaults();
-  memFSM.delete(chatId);
   await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
 }
 
-/* ===== BUDGET GLOBAL ===== */
+/* Assistant Nouveau projet */
+
+function backToMenuKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
+
+async function askTitle(chatId, uid){
+  const keys = keysForUser();
+  await setJSON(keys.tmp(uid), { step:'title' }, 900);
+  await reply(chatId, 'Titre du projet ?', backToMenuKB());
+}
+
+async function askBudget(chatId, uid, title){
+  const keys = keysForUser();
+  await setJSON(keys.tmp(uid), { step:'budget', title }, 900);
+  const m = kb([
+    [{ text:'Cap 10€', callback_data:'np:cap:1000' }, { text:'Cap 20€', callback_data:'np:cap:2000' }],
+    [{ text:'Alerte 1€', callback_data:'np:alert:100' }, { text:'Alerte 2€', callback_data:'np:alert:200' }],
+    [{ text:'OK', callback_data:'np:budget:ok' }, { text:'⬅️ Annuler', callback_data:'act:menu' }]
+  ]);
+  await reply(chatId, `Budget pour <b>${escapeHtml(title)}</b> ?`, m);
+}
+
+async function askPrompt(chatId, uid){
+  const keys = keysForUser();
+  const tmp = await getJSON(keys.tmp(uid));
+  if (!tmp) return reply(chatId,'Session expirée.', backToMenuKB());
+  tmp.step = 'prompt';
+  await setJSON(keys.tmp(uid), tmp, 900);
+  await reply(chatId, 'Envoie le <b>prompt principal</b> du projet.', backToMenuKB());
+}
+
+async function askConfirm(chatId, uid, promptText){
+  const keys = keysForUser();
+  const tmp = await getJSON(keys.tmp(uid));
+  if (!tmp) return reply(chatId,'Session expirée.', backToMenuKB());
+  tmp.step = 'confirm'; tmp.prompt = promptText;
+  await setJSON(keys.tmp(uid), tmp, 900);
+
+  const summary = String(promptText).split('\n').map(l=>l.trim()).filter(Boolean).slice(0,10).join('\n').slice(0,700);
+  const m = kb([
+    [{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier', callback_data:'np:confirm:no' }],
+    [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+  ]);
+  await reply(chatId, `Résumé compris :\n\n${escapeHtml(summary)}\n\nValider ?`, m);
+}
+
+async function createProjectFromTmp(chatId, uid){
+  const keys = keysForUser();
+  const tmp = await getJSON(keys.tmp(uid));
+  if (!tmp || !tmp.title || !tmp.prompt) return reply(chatId,'Session incomplète.', backToMenuKB());
+
+  const list = (await getJSON(keys.projectsList)) || [];
+  const pid = String(Date.now());
+  const proj = {
+    id: pid,
+    title: tmp.title,
+    version: 'v1',
+    status: 'draft',
+    budget: { capCents: tmp.capCents || 0, alertStepCents: tmp.alertCents || 0 },
+    prompt: tmp.prompt,
+    createdAt: Date.now()
+  };
+  await setJSON(keys.project(pid), proj);
+  list.unshift({ id: pid, title: proj.title, version: proj.version, createdAt: proj.createdAt });
+  await setJSON(keys.projectsList, list);
+  await del(keys.tmp(uid));
+
+  await reply(chatId, `Projet <b>${escapeHtml(proj.title)}</b> créé ✅\nVersion: ${proj.version}\nCap: ${(proj.budget.capCents/100).toFixed(2)} € – Alerte: ${(proj.budget.alertStepCents/100).toFixed(2)} €`, 
+    kb([
+      [{ text:'▶️ Reprendre', callback_data:`prj:resume:${pid}` }, { text:'📦 ZIP', callback_data:`prj:zip:${pid}` }],
+      [{ text:'🔑 Secrets', callback_data:`prj:secrets:${pid}` }, { text:'🗑️ Supprimer', callback_data:`prj:del:${pid}` }],
+      [{ text:'⬅️ Menu', callback_data:'act:menu' }]
+    ]));
+}
+
+/* Projets & Budget */
+
+async function listProjects(chatId){
+  const keys = keysForUser();
+  const list = (await getJSON(keys.projectsList)) || [];
+  if (!list.length){
+    return reply(chatId, 'Aucun projet. Lance un nouveau projet.',
+      kb([[{ text:'🆕 Nouveau projet', callback_data:'act:new' }],[{ text:'⬅️ Retour', callback_data:'act:menu' }]]));
+  }
+  const rows = list.map(p => [{ text:`📁 ${p.title} (${p.id})`, callback_data:`prj:open:${p.id}` }]);
+  rows.push([{ text:'⬅️ Retour', callback_data:'act:menu' }]);
+  await reply(chatId, 'Projets :', kb(rows));
+}
+
+async function openProject(chatId, pid){
+  const keys = keysForUser();
+  const p = await getJSON(keys.project(pid));
+  if (!p) return reply(chatId,'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]]));
+  const rows = [
+    [{ text:'▶️ Reprendre', callback_data:`prj:resume:${pid}` }, { text:'📦 ZIP', callback_data:`prj:zip:${pid}` }],
+    [{ text:'🔑 Secrets', callback_data:`prj:secrets:${pid}` }, { text:'🗑️ Supprimer', callback_data:`prj:del:${pid}` }],
+    [{ text:'⬅️ Retour', callback_data:'act:list' }]
+  ];
+  await reply(chatId, `Projet <b>${escapeHtml(p.title)}</b>\nVersion: ${p.version || 'v1'}\nStatus: ${p.status || 'draft'}`, kb(rows));
+}
+
+function fmtEurosCents(c){ return `${(c/100).toFixed(2).replace('.',',')} €`; }
+
 async function handleBudgetMenu(chatId){
   const keys = keysForUser();
-  const u = (await getJSON(k('usage','global'))) || { tokens:0, euros:0 };
+  const u = (await getJSON('creatorbottg:usage:global')) || { tokens:0, euros:0 };
   const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
-  const txt = [
-    'Budget global',
-    `- Dépensé: ${(u.euros||0).toFixed(4)} €  (${u.tokens||0} tokens)`,
-    `- Cap: ${fmtEurosCents(Number(b.capCents||0))}`,
-    `- Alerte: ${fmtEurosCents(Number(b.alertStepCents||0))}`,
-    `- Prix/1k tokens: ${pricePer1k()} €`
-  ].join('\n');
-  const rows = [
+  const txt = `Budget global\n- Dépensé: ${(u.euros||0).toFixed(4)} €  (${u.tokens||0} tokens)\n- Cap: ${fmtEurosCents(b.capCents||0)}\n- Alerte: ${fmtEurosCents(b.alertStepCents||0)}\n- Prix/1k: ${pricePer1k()} €`;
+  await reply(chatId, txt, kb([
     [{ text:'Cap +1€', callback_data:'bdg:cap:+100' }, { text:'Cap -1€', callback_data:'bdg:cap:-100' }],
     [{ text:'Alerte +1€', callback_data:'bdg:al:+100' }, { text:'Alerte -1€', callback_data:'bdg:al:-100' }],
     [{ text:'RAZ dépense', callback_data:'bdg:raz' }],
-    [{ text:'Retour', callback_data:'act:menu' }]
-  ];
-  await reply(chatId, txt, kb(rows));
-}
-
-/* ===== FSM / Nouveau projet ===== */
-function fsmKey(chatId){ return `fsm:${chatId}`; }
-
-async function saveFSM(chatId, data){
-  memFSM.set(chatId, data);
-  await setJSON(fsmKey(chatId), data, 900);
-}
-async function loadFSM(chatId){
-  if (memFSM.has(chatId)) return memFSM.get(chatId);
-  const kv = await getJSON(fsmKey(chatId));
-  if (kv) memFSM.set(chatId, kv);
-  return kv;
-}
-
-async function askNewProjectTitle(chatId){
-  await saveFSM(chatId, { step:'title' });
-  await reply(chatId, 'Titre du projet ?', kb([[{ text:'Retour', callback_data:'act:menu' }]]));
-}
-
-async function askBudget(chatId, tmp){
-  tmp.step = 'budget';
-  tmp.capCents = tmp.capCents ?? 1000;
-  tmp.alertStepCents = tmp.alertStepCents ?? 100;
-  await saveFSM(chatId, tmp);
-  const txt = `Budget pour <b>${escapeHtml(tmp.title||'')}</b>\nCap: ${fmtEurosCents(tmp.capCents)}\nAlerte: ${fmtEurosCents(tmp.alertStepCents)}`;
-  const rows = [
-    [{ text:'Cap +1€', callback_data:'np:cap:+100' }, { text:'Cap -1€', callback_data:'np:cap:-100' }],
-    [{ text:'Alerte +1€', callback_data:'np:al:+100' }, { text:'Alerte -1€', callback_data:'np:al:-100' }],
-    [{ text:'OK', callback_data:'np:budget:ok' }]
-  ];
-  await reply(chatId, txt, kb(rows));
-}
-
-async function askPrompt(chatId, tmp){
-  tmp.step = 'prompt';
-  await saveFSM(chatId, tmp);
-  await reply(chatId, 'Envoie le <b>prompt principal</b> (besoins, contraintes, livrables)…');
-}
-
-function summarizePrompt(p){
-  const lines = String(p||'').split('\n').map(l=>l.trim()).filter(Boolean);
-  return lines.slice(0,12).join('\n').slice(0,900);
-}
-
-async function confirmProject(chatId, tmp){
-  tmp.step = 'confirm';
-  await saveFSM(chatId, tmp);
-  const summary = summarizePrompt(tmp.prompt||'');
-  const rows = [
-    [{ text:'Valider ✅', callback_data:'np:confirm:yes' }, { text:'Relire ✏️', callback_data:'np:confirm:no' }]
-  ];
-  await reply(chatId, `Résumé compris pour <b>${escapeHtml(tmp.title||'')}</b>:\n\n${escapeHtml(summary)}\n\nValider ?`, kb(rows));
-}
-
-async function persistProject(chatId, tmp){
-  const keys = keysForUser();
-  const id = Date.now().toString(36);
-  const p = {
-    id, title: tmp.title, version: 'v1', status: 'draft',
-    budget: { capCents: tmp.capCents, alertStepCents: tmp.alertStepCents },
-    prompt: tmp.prompt, created: now()
-  };
-  await setJSON(keys.project(id), p);
-  const list = (await getJSON(keys.projectsList)) || [];
-  list.unshift({ id, title: p.title, created: p.created });
-  await setJSON(keys.projectsList, list);
-  memFSM.delete(chatId);
-  await del(fsmKey(chatId));
-  await reply(chatId, `Projet <b>${escapeHtml(p.title)}</b> créé ✅`, kb([
-    [{ text:'Ouvrir 📁', callback_data:`prj:open:${id}` }],
-    [{ text:'Menu', callback_data:'act:menu' }]
+    [{ text:'⬅️ Retour', callback_data:'act:menu' }]
   ]));
 }
 
-/* ===== ROUTEURS ===== */
+async function adjustBudget(chatId, kind, delta){
+  const keys = keysForUser();
+  const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
+  if (kind === 'cap') b.capCents = Math.max(0,(b.capCents||0)+delta);
+  if (kind === 'al')  b.alertStepCents = Math.max(0,(b.alertStepCents||0)+delta);
+  await setJSON(keys.budgetGlobal, b);
+  await handleBudgetMenu(chatId);
+}
+
+async function resetSpent(chatId){
+  await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] });
+  await reply(chatId, 'Dépense globale remise à zéro.', kb([[{ text:'⬅️ Retour', callback_data:'act:budget' }]]));
+}
+
+/* ZIP (stub) */
+
+async function makeZipForProject(project){
+  const zip = new AdmZip();
+  const readme = `# ${project.title}\n\nVersion: ${project.version}\n\n## Déploiement rapide (Vercel)\n1) Crée un projet Vercel\n2) Ajoute les variables d'environnement\n3) Déploie\n`;
+  zip.addFile('README.md', Buffer.from(readme,'utf-8'));
+  const botjs = `export default async function handler(req,res){res.status(200).json({ok:true,message:"${project.title} bot ready"})}`;
+  zip.addFile('api/bot.js', Buffer.from(botjs,'utf-8'));
+  return zip.toBuffer();
+}
+
+async function sendZip(chatId, buffer, filename){
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('document', new Blob([buffer]), filename);
+  await fetch(`${API}/sendDocument`, { method:'POST', body: form });
+}
+
+async function buildZip(chatId, pid){
+  const p = await getJSON(`creatorbottg:project:${pid}`);
+  if (!p) return reply(chatId,'Projet introuvable.', kb([[{ text:'⬅️ Retour', callback_data:'act:list' }]]));
+  const buf = await makeZipForProject(p);
+  await sendZip(chatId, buf, `${p.title.replace(/\s+/g,'_')}_${p.version||'v1'}.zip`);
+  const tokens = 300;
+  const { euros } = await addUsage({ projectId: pid, tokens });
+  await reply(chatId, `ZIP généré ✅\nCoût estimé: ${euros.toFixed(4)} €`, kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
+}
+
+/* Router */
+
 async function handleText(chatId, fromId, text){
   if (!isAdmin(fromId)) return;
-  const tmp = await loadFSM(chatId);
-  if (!tmp) return;
+  const keys = keysForUser();
+  const tmp = await getJSON(keys.tmp(fromId));
 
-  if (tmp.step === 'title'){
-    tmp.title = String(text||'').trim();
-    await askBudget(chatId, tmp);
-    return;
+  if (tmp?.step === 'title'){
+    const title = text.trim();
+    return askBudget(chatId, fromId, title);
   }
 
-  if (tmp.step === 'prompt'){
-    tmp.prompt = text;
-    await saveFSM(chatId, tmp);
-    await confirmProject(chatId, tmp);
-    return;
+  if (tmp?.step === 'prompt'){
+    return askConfirm(chatId, fromId, text);
   }
 }
 
 async function handleCallback(chatId, fromId, data){
   if (!isAdmin(fromId)) return;
-  const tmp = await loadFSM(chatId) || {};
 
   if (data === 'act:menu') return handleStart(chatId);
-  if (data === 'act:new')  return askNewProjectTitle(chatId);
+  if (data === 'act:new')  return askTitle(chatId, fromId);
+  if (data === 'act:list') return listProjects(chatId);
+  if (data === 'act:budget') return handleBudgetMenu(chatId);
+  if (data === 'act:reset') { await ensureGlobalDefaults(); return handleStart(chatId); }
 
   if (data.startsWith('np:')){
-    const m = data.match(/^np:(cap|al):([+-]\d+)$/);
-    if (m){
-      const [_, kind, val] = m;
-      tmp.capCents = tmp.capCents ?? 1000;
-      tmp.alertStepCents = tmp.alertStepCents ?? 100;
-      const delta = Number(val);
-      if (kind==='cap') tmp.capCents += delta;
-      if (kind==='al') tmp.alertStepCents += delta;
-      await askBudget(chatId, tmp);
-      return;
-    }
-    if (data==='np:budget:ok') return askPrompt(chatId, tmp);
-    if (data==='np:confirm:yes') return persistProject(chatId, tmp);
-    if (data==='np:confirm:no'){ tmp.step='prompt'; await saveFSM(chatId,tmp); return reply(chatId,'Renvoie ton prompt corrigé.'); }
+    const keys = keysForUser();
+    const tmp = (await getJSON(keys.tmp(fromId))) || {};
+    const [, sub, val] = data.split(':');
+
+    if (sub === 'cap'){ tmp.capCents = Number(val); await setJSON(keys.tmp(fromId), { ...tmp, step:'budget' }, 900); return; }
+    if (sub === 'alert'){ tmp.alertCents = Number(val); await setJSON(keys.tmp(fromId), { ...tmp, step:'budget' }, 900); return; }
+    if (sub === 'budget' && val === 'ok'){ return askPrompt(chatId, fromId); }
+    if (sub === 'confirm' && val === 'yes'){ return createProjectFromTmp(chatId, fromId); }
+    if (sub === 'confirm' && val === 'no'){ return askPrompt(chatId, fromId); }
   }
 
-  if (data==='act:list') return listProjects(chatId);
+  if (data.startsWith('prj:')){
+    const [, act, pid] = data.split(':');
+    if (act === 'open')   return openProject(chatId, pid);
+    if (act === 'zip')    return buildZip(chatId, pid);
+    if (act === 'resume') return reply(chatId, 'Mode assistant de reprise à venir.', kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
+    if (act === 'secrets')return reply(chatId, 'Secrets par projet (édition à venir).', kb([[{ text:'⬅️ Retour', callback_data:`prj:open:${pid}` }]]));
+  }
+
+  if (data.startsWith('bdg:')){
+    const [, kind, delta] = data.split(':');
+    if (kind === 'raz') return resetSpent(chatId);
+    if (kind === 'cap' || kind === 'al') return adjustBudget(chatId, kind, Number(delta));
+  }
 }
 
+/* HTTP */
+
 export default async function handler(req,res){
-  if (req.method==='GET') return res.status(200).send('OK');
+  if (req.method === 'GET') return res.status(200).send('OK');
+  if (req.method !== 'POST') return res.status(405).json({ ok:false });
+
   try{
-    const upd = req.body||{};
-    const msg=upd.message; const cb=upd.callback_query;
+    const update = req.body || {};
+    const msg = update.message;
+    const cb  = update.callback_query;
+
     if (msg && msg.text){
-      const chatId=msg.chat.id, fromId=msg.from.id;
-      if (!isAdmin(fromId)){ await reply(chatId,'Accès refusé'); return res.json({ok:true}); }
-      if (msg.text==='/start') await handleStart(chatId);
-      else await handleText(chatId,fromId,msg.text);
-      return res.json({ok:true});
+      const fromId = msg.from?.id || msg.chat?.id;
+      if (!isAdmin(fromId)){ await reply(msg.chat.id,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      if (msg.text === '/start') await handleStart(msg.chat.id);
+      else await handleText(msg.chat.id, fromId, msg.text);
+      return res.json({ ok:true });
     }
+
     if (cb){
-      const chatId=cb.message.chat.id, fromId=cb.from.id;
-      if (!isAdmin(fromId)){ await reply(chatId,'Accès refusé'); return res.json({ok:true}); }
-      await handleCallback(chatId,fromId,cb.data||'');
-      await fetch(`${API}/answerCallbackQuery`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_query_id:cb.id})});
-      return res.json({ok:true});
+      const chatId = cb.message?.chat?.id;
+      const fromId = cb.from?.id;
+      if (!isAdmin(fromId)){ await reply(chatId,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      await handleCallback(chatId, fromId, cb.data || '');
+      await fetch(`${API}/answerCallbackQuery`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ callback_query_id: cb.id }) });
+      return res.json({ ok:true });
     }
-    return res.json({ok:true});
-  }catch(e){ return res.status(200).json({ok:true,error:String(e)}); }
+
+    return res.json({ ok:true });
+  }catch(e){
+    return res.status(200).json({ ok:true, error: String(e) });
+  }
 }
