@@ -15,34 +15,32 @@ async function kvFetch(path, method = 'GET', body) {
 }
 
 const NS = 'creatorbottg';
-function k(...parts){ return [NS, ...parts].join(':'); }
+function k(...parts) { return [NS, ...parts].join(':'); }
 
-export async function getJSON(key, fallback=null){
+export async function getJSON(key, fallback = null) {
   const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
   if (!r || !('result' in r) || r.result === null) return fallback;
   try { return JSON.parse(r.result); } catch { return fallback; }
 }
 
-export async function setJSON(key, val, ttlSec){
+export async function setJSON(key, val, ttlSec) {
   const body = { value: JSON.stringify(val) };
   if (ttlSec) body.ttl = ttlSec;
   await kvFetch(`/set/${encodeURIComponent(key)}`, 'POST', body);
   return true;
 }
 
-export async function del(key){
+export async function del(key) {
   await kvFetch(`/del/${encodeURIComponent(key)}`, 'POST');
   return true;
 }
 
-export function keysForUser(){
+export function keysForUser() {
   return {
     budgetGlobal: k('budget','global'),
     projectsList: k('projects','list'),
     project: (pid) => k('project', pid),
     tmp: (uid) => k('tmp', uid),
-    secretsGlobal: k('secrets','global'),
-    secretsProject: (pid) => k('secrets','project', pid),
     usageGlobal: k('usage','global'),
     usageProject: (pid) => k('usage','project', pid)
   };
@@ -62,7 +60,7 @@ export function estimateTokens(str){
   return Math.max(1, Math.round(chars/4));
 }
 
-export async function addUsage({ projectId, tokens }){
+export async function addUsage({ projectId, tokens }) {
   const userUsageKey = k('usage','global');
   const projUsageKey = k('usage','project', projectId || 'none');
   const p = pricePer1k();
