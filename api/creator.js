@@ -36,26 +36,20 @@ async function handleStart(chatId){
   await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
 }
 
-/* Assistant Nouveau projet */
+/* === Assistant Nouveau projet / FSM en KV === */
 
 function backToMenuKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
 
 async function safeSetTmp(uid, obj, ttl=900){
-  const keys = keysForUser();
   try{
-    await setJSON(keys.tmp(uid), obj, ttl);
+    await setJSON(keysForUser().tmp(uid), obj, ttl);
     return true;
-  }catch(e){
-    return false;
-  }
+  }catch{ return false; }
 }
 async function safeGetTmp(uid){
-  const keys = keysForUser();
   try{
-    return await getJSON(keys.tmp(uid));
-  }catch(e){
-    return null;
-  }
+    return await getJSON(keysForUser().tmp(uid));
+  }catch{ return null; }
 }
 
 async function askTitle(chatId, uid){
@@ -211,11 +205,9 @@ async function buildZip(chatId, pid){
 async function handleText(chatId, fromId, text){
   if (!isAdmin(fromId)) return;
 
-  // Commande debug (admin only)
   if (text.trim() === '/debug'){
-    const keys = keysForUser();
-    const tmp = await getJSON(keys.tmp(fromId));
-    await reply(chatId, `<b>DEBUG TMP</b>\n<code>${escapeHtml(JSON.stringify(tmp,null,2))}</code>`, backToMenuKB());
+    const tmp = await getJSON(keysForUser().tmp(fromId));
+    await reply(chatId, `<b>DEBUG TMP</b>\n<code>${escapeHtml(JSON.stringify(tmp,null,2))}</code>`, kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]));
     return;
   }
 
@@ -260,9 +252,10 @@ async function handleCallback(chatId, fromId, data){
   }
 
   if (data.startsWith('bdg:')){
-    const [, kind, delta] = data.split(':');
-    if (kind === 'raz') return resetSpent(chatId);
-    if (kind === 'cap' || kind === 'al') return adjustBudget(chatId, kind, Number(delta));
+    const parts = data.split(':');
+    // bdg:raz  OR  bdg:cap:+100 / bdg:al:-100
+    if (parts[1] === 'raz') return resetSpent(chatId);
+    if (parts[1] === 'cap' || parts[1] === 'al') return adjustBudget(chatId, parts[1], Number(parts[2]));
   }
 }
 
@@ -296,7 +289,6 @@ export default async function handler(req,res){
 
     return res.json({ ok:true });
   }catch(e){
-    // surface l'erreur pour debuggage rapide dans Telegram
     try{ await reply(process.env.ADMIN_TELEGRAM_ID, `⚠️ Webhook error: <code>${escapeHtml(String(e))}</code>`); }catch{}
     return res.status(200).json({ ok:true, error: String(e) });
   }
