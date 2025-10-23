@@ -23,6 +23,9 @@ async function addSpend(projectId, amount){ const key=`budget:${projectId}`; con
 async function budgetText(projectId){ const b=await getJSON(`budget:${projectId}`,{spent:0,cap:10,step:1}); return `Budget *${projectId}*\n- Dépensé: *${b.spent} €*\n- Plafond: *${b.cap} €*\n- Alerte: *${b.step} €*`; }
 
 async function ensureProject(chatId){ const st=await getState(chatId); if(!st.project) st.project={id:`p${Date.now()}`,title:null,brief:null,files:[]}; await setState(chatId,st); return st; }
+async function pushProjectMeta(chatId, meta){ const key=`projects:${chatId}`; const list=(await getJSON(key,[]))||[]; list.push(meta); await setJSON(key,list); }
+async function listProjects(chatId){ return (await getJSON(`projects:${chatId}`,[]))||[]; }
+
 function kb(rows){ return { reply_markup:{ inline_keyboard: rows } }; }
 
 async function generateTargetZip(project){
@@ -31,9 +34,9 @@ async function generateTargetZip(project){
 
 ## Installation
 1) Crée un projet Vercel.
-2) Ajoute TELEGRAM_BOT_TOKEN (Production).
+2) Ajoute TELEGRAM_BOT_TOKEN en Production.
 3) Déploie.
-4) Webhook:
+4) Configure le webhook:
    https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<ton-domaine>/api/bot
 5) Test: /start
 
@@ -68,7 +71,7 @@ async function refineReadme(brief, base){
     model: MODEL,
     messages: [
       {role:"system",content:"Tu écris des README concis et actionnables pour bots Telegram sur Vercel."},
-      {role:"user",content:`Brief:\n${brief}\n\nREADME:\n${base}\n\nAméliore la clarté sans allonger inutilement.`}
+      {role:"user",content:`Brief:\n${brief}\n\nREADME:\n${base}\n\nAméliore la clarté, garde les étapes et évite le blabla.`}
     ],
     temperature:0.2
   });
@@ -79,20 +82,72 @@ async function refineReadme(brief, base){
 
 async function onStart(chatId){
   const admin = process.env.ADMIN_TELEGRAM_ID ? `\nAdmin: ${process.env.ADMIN_TELEGRAM_ID}` : "";
-  const txt = ["CreatorBot-TG en ligne ✅","Commandes:","/nouveau_projet","/secrets","/budget 10 1","/dépenses"].join("\n")+admin;
+  const txt = ["CreatorBot-TG en ligne ✅","Commandes:","/nouveau_projet","/projets","/zip","/secrets","/budget 10 1","/dépenses","/reset"].join("\n")+admin;
   await sendMessage(chatId, txt);
 }
 async function onNewProject(chatId){ const st=await ensureProject(chatId); st.phase="ask_title"; await setState(chatId,st); await sendMessage(chatId,"Titre du projet ?"); }
 
 async function onText(chatId,text){
   const st=await getState(chatId);
+
   if(text==="/start") return onStart(chatId);
   if(text==="/nouveau_projet") return onNewProject(chatId);
-  if(text==="/secrets"){ const names=Object.keys(process.env).filter(k=>k.endsWith("_API_KEY")||k.endsWith("_BOT_TOKEN")); return sendMessage(chatId,"Noms de secrets: "+(names.join(", ")||"(aucun)")); }
-  if(text.startsWith("/budget")){ const p=text.split(/\s+/); const cap=Number(p[1]||"10"), step=Number(p[2]||"1"); await setJSON("budget:global",{spent:0,cap,step}); return sendMessage(chatId, await budgetText("global")); }
-  if(text==="/dépenses"){ return sendMessage(chatId, await budgetText("global")); }
-  if(st.phase==="ask_title"){ st.project=st.project||{id:`p${Date.now()}`}; st.project.title=text.trim().slice(0,120); st.phase="ask_brief"; await setState(chatId,st); return sendMessage(chatId,"Brief du projet ? (texte)"); }
-  if(st.phase==="ask_brief"){ st.project.brief=text.trim(); st.phase="await_files_or_confirm"; await setState(chatId,st); const sum=["Résumé:","- Titre: "+st.project.title,"- Brief: "+(st.project.brief.substring(0,400))+(st.project.brief.length>400?"…":""),"Ajoute des fichiers si besoin puis valide."].join("\n"); return sendMessage(chatId,sum,{reply_markup:{inline_keyboard:[[{"text":"Valider","callback_data":"confirm_project"}],[{"text":"Corriger le brief","callback_data":"edit_brief"}]]}}); }
+
+  if(text==="/projets"){
+    const list = await listProjects(chatId);
+    if(!list.length) return sendMessage(chatId,"Aucun projet enregistré pour l’instant.");
+    const lines = list.map((p,i)=>`${i+1}. ${p.title} — ${new Date(p.ts).toLocaleString()}`);
+    return sendMessage(chatId, "*Projets:*\n"+lines.join("\n"));
+  }
+
+  if(text==="/zip"){
+    const list = await listProjects(chatId);
+    const last = list[list.length-1];
+    const proj = last ? { title:last.title, brief:last.brief||"", files:last.files||[] } : (st.project||null);
+    if(!proj || !proj.title) return sendMessage(chatId,"Aucun projet disponible. Lance /nouveau_projet.");
+    let zipBuffer = await generateTargetZip(proj);
+    const refined = await refineReadme(proj.brief||"", "README généré.");
+    const z2=new JSZip(), z1=await JSZip.loadAsync(zipBuffer);
+    for(const e of Object.keys(z1.files)){ const f=z1.files[e]; const c=await f.async("uint8array"); if(e==="README.md") z2.file(e,new TextEncoder().encode(refined)); else z2.file(e,c); }
+    zipBuffer = await z2.generateAsync({ type:"uint8array" });
+    await sendDocument(chatId, `${proj.title||"projet"}-squelette.zip`, zipBuffer, "Archive régénérée.");
+    return;
+  }
+
+  if(text==="/secrets"){
+    const names=Object.keys(process.env).filter(k=>k.endsWith("_API_KEY")||k.endsWith("_BOT_TOKEN"));
+    return sendMessage(chatId,"Noms de secrets: "+(names.join(", ")||"(aucun)"));
+  }
+
+  if(text.startsWith("/budget")){
+    const p=text.split(/\s+/); const cap=Number(p[1]||"10"), step=Number(p[2]||"1");
+    await setJSON("budget:global",{spent:0,cap,step});
+    return sendMessage(chatId, await budgetText("global"));
+  }
+
+  if(text==="/dépenses"){
+    return sendMessage(chatId, await budgetText("global"));
+  }
+
+  if(text==="/reset"){
+    await setJSON(`chat:${chatId}`, { phase:"idle" });
+    return sendMessage(chatId,"Contexte réinitialisé.");
+  }
+
+  if(st.phase==="ask_title"){
+    st.project=st.project||{id:`p${Date.now()}`};
+    st.project.title=text.trim().slice(0,120);
+    st.phase="ask_brief"; await setState(chatId,st);
+    return sendMessage(chatId,"Brief du projet ? (texte)");
+  }
+
+  if(st.phase==="ask_brief"){
+    st.project.brief=text.trim();
+    st.phase="await_files_or_confirm"; await setState(chatId,st);
+    const sum=["Résumé:","- Titre: "+st.project.title,"- Brief: "+(st.project.brief.substring(0,400))+(st.project.brief.length>400?"…":""),"Ajoute des fichiers si besoin puis valide."].join("\n");
+    return sendMessage(chatId,sum, kb([[{text:"Valider",callback_data:"confirm_project"}],[{text:"Corriger le brief",callback_data:"edit_brief"}]]));
+  }
+
   return sendMessage(chatId,"Reçu.");
 }
 
@@ -106,7 +161,9 @@ async function onDocument(chatId,doc){
 
 async function onCallbackQuery(cb){
   const id=cb.id; const data=cb.data; const chatId=cb.message?.chat?.id; const st=await getState(chatId);
+
   if(data==="edit_brief"){ st.phase="ask_brief"; await setState(chatId,st); await answerCb(id,"Modifie le brief."); return sendMessage(chatId,"Envoie le nouveau brief."); }
+
   if(data==="confirm_project"){
     await answerCb(id,"Validation…");
     let zipBuffer = await generateTargetZip(st.project);
@@ -115,8 +172,11 @@ async function onCallbackQuery(cb){
     for(const e of Object.keys(z1.files)){ const f=z1.files[e]; const c=await f.async("uint8array"); if(e==="README.md") z2.file(e,new TextEncoder().encode(refined)); else z2.file(e,c); }
     zipBuffer = await z2.generateAsync({ type:"uint8array" });
     await sendDocument(chatId, `${st.project.title||"projet"}-squelette.zip`, zipBuffer, "Archive prête à déployer.");
-    st.phase="idle"; await setState(chatId,st); return;
+    await pushProjectMeta(chatId, { title: st.project.title, brief: st.project.brief, files: st.project.files||[], ts: Date.now() });
+    st.phase="idle"; await setState(chatId,st);
+    return;
   }
+
   return answerCb(id,"OK");
 }
 
