@@ -15,7 +15,7 @@ async function kvFetch(path, method = 'GET', body) {
 }
 
 const NS = 'creatorbottg';
-function k(...parts) { return [NS, ...parts].join(':'); }
+export function k(...parts) { return [NS, ...parts].join(':'); }
 
 export async function getJSON(key, fallback = null) {
   const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
@@ -40,8 +40,7 @@ export function keysForUser() {
     budgetGlobal: k('budget','global'),
     projectsList: k('projects','list'),
     project: (pid) => k('project', pid),
-    secretsGlobal: k('secrets','global'),
-    secretsProject: (pid) => k('secrets','project', pid),
+    tmp: (uid) => k('tmp', uid),
     usageGlobal: k('usage','global'),
     usageProject: (pid) => k('usage','project', pid)
   };
@@ -52,7 +51,7 @@ export function now(){ return Math.floor(Date.now()/1000); }
 export function pricePer1k(){
   const envP = process.env.PRICE_PER_1K;
   if (envP) return Number(envP);
-  return 0.005;
+  return 0.005; // € / 1k tokens (défaut)
 }
 
 export function estimateTokens(str){
