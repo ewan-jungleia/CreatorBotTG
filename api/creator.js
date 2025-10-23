@@ -5,13 +5,13 @@ import { getJSON, setJSON } from "./_kv.js";
 const TG = process.env.TELEGRAM_BOT_TOKEN;
 const API = `https://api.telegram.org/bot${TG}`;
 const FILE_API = `https://api.telegram.org/file/bot${TG}`;
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 function j(x){return JSON.stringify(x);}
 async function tg(m,p){const r=await fetch(`${API}/${m}`,{method:"POST",headers:{"Content-Type":"application/json"},body:j(p)});return r.json().catch(()=>({}));}
 async function sendText(id,t,ex={}){return tg("sendMessage",{chat_id:id,text:t,...ex});}
-async function answerCb(cid,t="OK"){return tg("answerCallbackQuery",{callback_query_id:cid,text,show_alert:false});}
-async function sendDoc(id,fname,buf,cap=""){const fd=new FormData();fd.append("chat_id",String(id));if(cap)fd.append("caption",cap);fd.append("document",new Blob([buf]),fname);return fetch(`${API}/sendDocument`,{method:"POST",body:fd});}
+async function answerCb(cid,t="OK"){return tg("answerCallbackQuery",{callback_query_id:cid,text:t,show_alert:false});}
+async function sendDoc(id,fname,buf,cap=""){const fd=new FormData();fd.append("chat_id",String(id));if(cap)fd.append("caption",cap);fd.append("document",new Blob([buf]),fname);const r=await fetch(`${API}/sendDocument`,{method:"POST",body:fd});return r.json();}
 
 async function getState(cid){return (await getJSON(`chat:${cid}`,{phase:"idle"}))||{phase:"idle"};}
 async function setState(cid,st){return setJSON(`chat:${cid}`,st);}
@@ -21,7 +21,8 @@ async function listProjects(cid){return (await getJSON(`projects:${cid}`,[]))||[
 const MODEL = process.env.CREATOR_MODEL || "gpt-4o-mini";
 const PRICE = { "gpt-4o-mini": 0.15, "gpt-3.5-turbo": 0.02 };
 function costEUR(chars,model=MODEL){const per1k=PRICE[model]??0.15;const tokens=Math.max(1,Math.round(chars/4));return Number(((tokens/1000)*per1k).toFixed(4));}
-async function ensureBudget(){const k=`budget:global`;const b=(await getJSON(k,null));if(!b){await setJSON(k,{spent:0,cap:10,step:1});return {spent:0,cap:10,step:1};}return b;}
+
+async function ensureBudget(){const k=`budget:global`;let b=await getJSON(k,null);if(!b){b={spent:0,cap:10,step:1};await setJSON(k,b);}return b;}
 async function addSpend(amount){const k=`budget:global`;const b=await ensureBudget();b.spent=Number((b.spent+amount).toFixed(4));await setJSON(k,b);return b;}
 async function setCap(v){const k=`budget:global`;const b=await ensureBudget();b.cap=Math.max(0,Number(v)||0);await setJSON(k,b);return b;}
 async function setStep(v){const k=`budget:global`;const b=await ensureBudget();b.step=Math.max(0,Number(v)||0);await setJSON(k,b);return b;}
@@ -29,7 +30,7 @@ async function resetSpent(){const k=`budget:global`;const b=await ensureBudget()
 async function getBudget(){return ensureBudget();}
 function budgetText(b){return `Budget global\n- Dépensé: ${b.spent} €\n- Plafond: ${b.cap} €\n- Alerte: ${b.step} €`;}
 
-// UI
+// === UI ===
 function mainMenu(){return{reply_markup:{inline_keyboard:[
 [{text:"🆕 Nouveau projet",callback_data:"act:new"},{text:"📦 ZIP",callback_data:"act:zip"}],
 [{text:"📂 Projets",callback_data:"act:projects"}],
@@ -41,7 +42,7 @@ function confirmKb(){return{reply_markup:{inline_keyboard:[
 [{text:"✏️ Corriger le brief",callback_data:"act:edit"}],
 [{text:"⬅️ Menu",callback_data:"act:menu"}]
 ]}};}
-function budgetMenu(b){return{reply_markup:{inline_keyboard:[
+function budgetMenu(){return{reply_markup:{inline_keyboard:[
 [{text:"➕ Cap +1€",callback_data:"budg:cap+1"},{text:"➕ Cap +5€",callback_data:"budg:cap+5"}],
 [{text:"➖ Cap -1€",callback_data:"budg:cap-1"},{text:"🔁 RAZ dépensé",callback_data:"budg:spent0"}],
 [{text:"⏰ Alerte +1€",callback_data:"budg:step+1"},{text:"⏰ Alerte -1€",callback_data:"budg:step-1"}],
@@ -49,7 +50,7 @@ function budgetMenu(b){return{reply_markup:{inline_keyboard:[
 [{text:"⬅️ Retour",callback_data:"act:menu"}]
 ]}};}
 
-// ZIP généré
+// === ZIP cible ===
 async function genZip(project){
   const zip=new JSZip();
   const readme=`# ${project.title||"Bot Telegram"} (généré par CreatorBot-TG)
@@ -60,11 +61,9 @@ async function genZip(project){
 3) Déploie.
 4) Webhook:
    https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<ton-domaine>/api/bot
-5) Test: /start
 
 ## Brief
-${project.brief||"(non fourni)"}
-`;
+${project.brief||"(non fourni)"}\n`;
   const bot=`export default async function handler(req,res){
   if(req.method!=="POST") return res.status(200).send("OK");
   try{
@@ -83,24 +82,29 @@ ${project.brief||"(non fourni)"}
   zip.file("vercel.json",`{"version":2,"routes":[{"src":"/api/bot","dest":"/api/bot.js"}]}`);
   return await zip.generateAsync({type:"uint8array"});
 }
+
 async function refineReadme(brief,base){
-  if(!process.envOPENAI_API_KEY && !process.env.OPENAI_API_KEY) return base;
-  const resp=await openai.chat.completions.create({model:MODEL,temperature:0.2,messages:[
-    {role:"system",content:"Tu écris des README concis et actionnables pour bots Telegram sur Vercel."},
-    {role:"user",content:`Brief:\n${brief}\n\nREADME:\n${base}\n\nAméliore sans rallonger inutilement.`}
-  ]});
-  const out=resp.choices?.[0]?.message?.content||base;
-  await addSpend(costEUR(out.length,MODEL));
-  return out;
+  if(!openai) return base;
+  try{
+    const resp=await openai.chat.completions.create({
+      model:MODEL,temperature:0.2,
+      messages:[
+        {role:"system",content:"Tu écris des README concis et actionnables pour bots Telegram sur Vercel."},
+        {role:"user",content:`Brief:\n${brief}\n\nREADME:\n${base}\n\nAméliore sans rallonger inutilement.`}
+      ]
+    });
+    const out=resp.choices?.[0]?.message?.content||base;
+    await addSpend(costEUR(out.length,MODEL));
+    return out;
+  }catch{ return base; }
 }
 
-// Flux
+// === Flows ===
 async function onStart(id){await sendText(id,"CreatorBot-TG en ligne ✅\nChoisis une action :",mainMenu());}
 async function onNew(id){const st=await getState(id);st.project={id:`p${Date.now()}`,title:null,brief:null,files:[]};st.phase="ask_title";await setState(id,st);await sendText(id,"Titre du projet ?");}
 
 async function onText(id,txt){
   const st=await getState(id);
-
   if(txt==="/start"||txt==="/menu") return onStart(id);
 
   if(st.phase==="ask_title"){
@@ -116,13 +120,13 @@ async function onText(id,txt){
   }
   if(st.phase==="set_cap"){
     const b=await setCap(txt.trim());
-    const t=budgetText(b); st.phase="idle"; await setState(id,st);
-    return sendText(id,t,budgetMenu(b));
+    st.phase="idle";await setState(id,st);
+    return sendText(id,budgetText(b),budgetMenu());
   }
   if(st.phase==="set_step"){
     const b=await setStep(txt.trim());
-    const t=budgetText(b); st.phase="idle"; await setState(id,st);
-    return sendText(id,t,budgetMenu(b));
+    st.phase="idle";await setState(id,st);
+    return sendText(id,budgetText(b),budgetMenu());
   }
 
   return sendText(id,"Utilise le menu ci-dessous.",mainMenu());
@@ -139,57 +143,61 @@ async function onDoc(id,doc){
 }
 
 async function onCb(cb){
-  const id=cb.message.chat.id; const data=cb.data||""; const st=await getState(id);
+  const id = cb?.message?.chat?.id;
+  const data = cb?.data || "";
+  if(!id || !data) { if(cb?.id) await answerCb(cb.id,"OK"); return; }
+
   if(data.startsWith("act:")){
     const a=data.slice(4);
     if(a==="menu"){await answerCb(cb.id,"Menu");return onStart(id);}
     if(a==="new"){await answerCb(cb.id,"Nouveau projet");return onNew(id);}
     if(a==="projects"){await answerCb(cb.id,"Projets");const l=await listProjects(id);if(!l.length)return sendText(id,"Aucun projet pour l’instant.",mainMenu());return sendText(id,l.map((p,i)=>`${i+1}. ${p.title}`).join("\n"),mainMenu());}
     if(a==="secrets"){await answerCb(cb.id,"Secrets");const names=Object.keys(process.env).filter(k=>k.endsWith("_API_KEY")||k.endsWith("_BOT_TOKEN"));return sendText(id,"Noms de secrets:\n"+(names.join("\n")||"(aucun)"),mainMenu());}
-    if(a==="budget"){await answerCb(cb.id,"Budget");const b=await getBudget();return sendText(id,budgetText(b),budgetMenu(b));}
+    if(a==="budget"){await answerCb(cb.id,"Budget");const b=await getBudget();return sendText(id,budgetText(b),budgetMenu());}
     if(a==="reset"){await answerCb(cb.id,"Reset");await setJSON(`chat:${id}`,{phase:"idle"});return sendText(id,"Réinitialisé.",mainMenu());}
     if(a==="zip"){
       await answerCb(cb.id,"ZIP");
-      const l=await listProjects(id);const last=l[l.length-1]||st.project;
+      const st=await getState(id); const l=await listProjects(id); const last=l[l.length-1]||st.project;
       if(!last||!last.title) return sendText(id,"Aucun projet disponible.",mainMenu());
       let buf=await genZip(last);
-      const z1=await JSZip.loadAsync(buf);const z2=new JSZip();
+      // Option: refine README si clé dispo
+      const z1=await JSZip.loadAsync(buf); const z2=new JSZip();
       for(const n of Object.keys(z1.files)){const f=z1.files[n];const c=await f.async("uint8array");z2.file(n,c);}
       buf=await z2.generateAsync({type:"uint8array"});
       await sendDoc(id,`${last.title||"projet"}-squelette.zip`,buf,"Archive prête à déployer.");
       return;
     }
+    return answerCb(cb.id,"OK");
   }
-  if(data==="act:confirm"||data==="act:edit"){} // compat
+
   if(data.startsWith("budg:")){
     const op=data.slice(5);
-    if(op==="setcap"){await answerCb(cb.id,"Saisir Cap");st.phase="set_cap";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur du *Plafond* en euros (nombre).");}
-    if(op==="setstep"){await answerCb(cb.id,"Saisir Alerte");st.phase="set_step";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur de *l'alerte* en euros (nombre).");}
-    if(op==="spent0"){await answerCb(cb.id,"RAZ dépensé");const b=await resetSpent();return sendText(id,budgetText(b),budgetMenu(b));}
-    if(/^cap[+\-]\d+$/.test(op)){const delta=Number(op.replace("cap",""));const b=await getBudget();b.cap=Math.max(0,Number((b.cap+delta).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Cap modifié");return sendText(id,budgetText(b),budgetMenu(b));}
-    if(/^step[+\-]\d+$/.test(op)){const delta=Number(op.replace("step",""));const b=await getBudget();b.step=Math.max(0,Number((b.step+delta).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Alerte modifiée");return sendText(id,budgetText(b),budgetMenu(b));}
+    if(op==="setcap"){await answerCb(cb.id,"Saisir Cap");const st=await getState(id);st.phase="set_cap";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur du Plafond (euros).");}
+    if(op==="setstep"){await answerCb(cb.id,"Saisir Alerte");const st=await getState(id);st.phase="set_step";await setState(id,st);return sendText(id,"Envoie la nouvelle valeur de l’alerte (euros).");}
+    if(op==="spent0"){await answerCb(cb.id,"RAZ");const b=await resetSpent();return sendText(id,budgetText(b),budgetMenu());}
+    if(/^cap[+\-]\d+$/.test(op)){const d=Number(op.replace("cap",""));const b=await getBudget();b.cap=Math.max(0,Number((b.cap+d).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Cap modifié");return sendText(id,budgetText(b),budgetMenu());}
+    if(/^step[+\-]\d+$/.test(op)){const d=Number(op.replace("step",""));const b=await getBudget();b.step=Math.max(0,Number((b.step+d).toFixed(2)));await setJSON(`budget:global`,b);await answerCb(cb.id,"Alerte modifiée");return sendText(id,budgetText(b),budgetMenu());}
+    return answerCb(cb.id,"OK");
   }
-  if(data==="act:confirm"||data==="confirm"||data==="act:confirm_project"){
+
+  if(data==="confirm"||data==="act:confirm"){
     await answerCb(cb.id,"Validation…");
-    const proj=st.project; if(!proj?.title) return sendText(id,"Projet incomplet.",mainMenu());
+    const st=await getState(id); const proj=st.project;
+    if(!proj?.title) return sendText(id,"Projet incomplet.",mainMenu());
     let buf=await genZip(proj);
     const refined=await refineReadme(proj.brief||"","README généré.");
-    const z1=await JSZip.loadAsync(buf);const z2=new JSZip();
+    const z1=await JSZip.loadAsync(buf); const z2=new JSZip();
     for(const n of Object.keys(z1.files)){
-      const f=z1.files[n];const c=await f.async("uint8array");
+      const f=z1.files[n]; const c=await f.async("uint8array");
       if(n==="README.md") z2.file(n,new TextEncoder().encode(refined)); else z2.file(n,c);
     }
     buf=await z2.generateAsync({type:"uint8array"});
     await sendDoc(id,`${proj.title||"projet"}-squelette.zip`,buf,"Archive prête à déployer.");
     await pushMeta(id,{title:proj.title,brief:proj.brief,files:proj.files||[],ts:Date.now()});
-    st.phase="idle";await setState(id,st);
+    st.phase="idle"; await setState(id,st);
     return sendText(id,"Projet livré ✅",mainMenu());
   }
-  if(data==="act:edit"||data==="edit"){
-    await answerCb(cb.id,"Corriger");
-    st.phase="ask_brief";await setState(id,st);
-    return sendText(id,"Envoie le nouveau brief.");
-  }
+
   await answerCb(cb.id,"OK");
 }
 
@@ -200,11 +208,13 @@ export default async function handler(req,res){
     const m=u.message||u.edited_message||null;
     if(m){
       const id=m.chat.id;
-      if(m.text){await onText(id,m.text.trim());return res.status(200).json({ok:true});}
-      if(m.document){await onDoc(id,m.document);return res.status(200).json({ok:true});}
-      await sendText(id,"Message non géré.",mainMenu());return res.status(200).json({ok:true});
+      if(m.text){ await onText(id, (m.text||"").trim()); return res.status(200).json({ok:true}); }
+      if(m.document){ await onDoc(id, m.document); return res.status(200).json({ok:true}); }
+      await sendText(id,"Message non géré.",mainMenu()); return res.status(200).json({ok:true});
     }
-    if(u.callback_query){await onCb(u.callback_query);return res.status(200).json({ok:true});}
+    if(u.callback_query){ await onCb(u.callback_query); return res.status(200).json({ok:true}); }
     return res.status(200).json({ok:true});
-  }catch(e){return res.status(200).json({ok:true,error:String(e)});}
+  }catch(e){
+    return res.status(200).json({ok:true,error:String(e)});
+  }
 }
