@@ -27,13 +27,9 @@ function mainMenu(){
 async function ensureGlobalDefaults(){
   const keys = keysForUser();
   const b = await getJSON(keys.budgetGlobal);
-  if (!b){
-    await setJSON(keys.budgetGlobal, { capCents: 1000, alertStepCents: 100, pPer1k: pricePer1k() });
-  }
+  if (!b) await setJSON(keys.budgetGlobal, { capCents: 1000, alertStepCents: 100, pPer1k: pricePer1k() });
   const u = await getJSON(k('usage','global'));
-  if (!u){
-    await setJSON(k('usage','global'), { tokens:0, euros:0, history:[] });
-  }
+  if (!u) await setJSON(k('usage','global'), { tokens:0, euros:0, history:[] });
 }
 
 async function handleStart(chatId){
@@ -76,29 +72,32 @@ async function resetSpent(chatId){
   await handleBudgetMenu(chatId);
 }
 
-/* ===== NOUVEAU PROJET (Assistant) ===== */
+/* ===== NOUVEAU PROJET (FSM par chatId) ===== */
+function fsmKey(chatId){ return keysForUser().tmp(`chat:${chatId}`); }
+
 async function askNewProjectTitle(chatId){
-  await setJSON(keysForUser().tmp(ADMIN_ID), { step:'title' }, 900);
+  await setJSON(fsmKey(chatId), { step:'title' }, 900);
   await reply(chatId, 'Titre du projet ?', kb([[{ text:'Retour', callback_data:'act:menu' }]]));
 }
 
 async function askBudget(chatId, tmp){
+  tmp.step = 'budget';
   tmp.capCents = tmp.capCents ?? 1000;
   tmp.alertStepCents = tmp.alertStepCents ?? 100;
-  await setJSON(keysForUser().tmp(ADMIN_ID), tmp, 900);
+  await setJSON(fsmKey(chatId), tmp, 900);
 
   const rows = [
     [{ text:'Cap +1€', callback_data:'np:cap:+100' }, { text:'Cap -1€', callback_data:'np:cap:-100' }],
     [{ text:'Alerte +1€', callback_data:'np:al:+100' }, { text:'Alerte -1€', callback_data:'np:al:-100' }],
     [{ text:'OK', callback_data:'np:budget:ok' }, { text:'Retour', callback_data:'act:menu' }]
   ];
-  const txt = `Budget pour <b>${escapeHtml(tmp.title)}</b>\nCap: ${fmtEurosCents(tmp.capCents)}\nAlerte: ${fmtEurosCents(tmp.alertStepCents)}`;
+  const txt = `Budget pour <b>${escapeHtml(tmp.title||'')}</b>\nCap: ${fmtEurosCents(tmp.capCents)}\nAlerte: ${fmtEurosCents(tmp.alertStepCents)}`;
   await reply(chatId, txt, kb(rows));
 }
 
 async function askPrompt(chatId, tmp){
   tmp.step = 'prompt';
-  await setJSON(keysForUser().tmp(ADMIN_ID), tmp, 900);
+  await setJSON(fsmKey(chatId), tmp, 900);
   await reply(chatId, 'Envoie le <b>prompt principal</b> (besoins, contraintes, livrables)…', kb([[{ text:'Retour', callback_data:'act:menu' }]]));
 }
 
@@ -109,13 +108,13 @@ function summarizePrompt(p){
 
 async function confirmProject(chatId, tmp){
   tmp.step = 'confirm';
-  await setJSON(keysForUser().tmp(ADMIN_ID), tmp, 900);
+  await setJSON(fsmKey(chatId), tmp, 900);
   const summary = summarizePrompt(tmp.prompt||'');
   const rows = [
     [{ text:'Valider ✅', callback_data:'np:confirm:yes' }, { text:'Relire ✏️', callback_data:'np:confirm:no' }],
     [{ text:'Retour', callback_data:'act:menu' }]
   ];
-  await reply(chatId, `Résumé compris pour <b>${escapeHtml(tmp.title)}</b>:\n\n${escapeHtml(summary)}\n\nValider ?`, kb(rows));
+  await reply(chatId, `Résumé compris pour <b>${escapeHtml(tmp.title||'')}</b>:\n\n${escapeHtml(summary)}\n\nValider ?`, kb(rows));
 }
 
 async function persistProject(chatId, tmp){
@@ -130,7 +129,7 @@ async function persistProject(chatId, tmp){
   const list = (await getJSON(keys.projectsList)) || [];
   list.unshift({ id, title: p.title, created: p.created });
   await setJSON(keys.projectsList, list);
-  await del(keys.tmp(ADMIN_ID));
+  await del(fsmKey(chatId));
 
   await reply(chatId, `Projet <b>${escapeHtml(p.title)}</b> créé ✅`, kb([
     [{ text:'Ouvrir 📁', callback_data:`prj:open:${id}` }],
@@ -206,26 +205,22 @@ async function buildZip(chatId, pid){
 /* ===== ROUTERS ===== */
 async function handleText(chatId, fromId, text){
   if (!isAdmin(fromId)) return;
-  const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(ADMIN_ID));
+  const tmp = await getJSON(fsmKey(chatId));
 
   if (tmp && tmp.step === 'title'){
-    tmp.title = text.trim();
-    tmp.step = 'budget';
-    await setJSON(keys.tmp(ADMIN_ID), tmp, 900);
+    tmp.title = String(text||'').trim();
     return askBudget(chatId, tmp);
   }
 
   if (tmp && tmp.step === 'prompt'){
     tmp.prompt = text;
-    await setJSON(keys.tmp(ADMIN_ID), tmp, 900);
+    await setJSON(fsmKey(chatId), tmp, 900);
     return confirmProject(chatId, tmp);
   }
 }
 
 async function handleCallback(chatId, fromId, data){
   if (!isAdmin(fromId)) return;
-  const keys = keysForUser();
 
   if (data === 'act:menu') return handleStart(chatId);
   if (data === 'act:new')  return askNewProjectTitle(chatId);
@@ -238,7 +233,7 @@ async function handleCallback(chatId, fromId, data){
   if (m1) return adjustBudget(chatId, m1[1], Number(m1[2]));
   if (data === 'bdg:raz') return resetSpent(chatId);
 
-  const tmp = (await getJSON(keys.tmp(ADMIN_ID))) || {};
+  const tmp = (await getJSON(fsmKey(chatId))) || {};
   if (data === 'np:budget:ok'){
     if (!tmp.title) return askNewProjectTitle(chatId);
     return askPrompt(chatId, tmp);
@@ -250,7 +245,7 @@ async function handleCallback(chatId, fromId, data){
     tmp.alertStepCents = tmp.alertStepCents ?? 100;
     if (kind === 'cap') tmp.capCents = Math.max(0, tmp.capCents + delta);
     if (kind === 'al')  tmp.alertStepCents = Math.max(0, tmp.alertStepCents + delta);
-    await setJSON(keys.tmp(ADMIN_ID), tmp, 900);
+    await setJSON(fsmKey(chatId), tmp, 900);
     return askBudget(chatId, tmp);
   }
   if (data === 'np:confirm:yes'){
@@ -259,7 +254,7 @@ async function handleCallback(chatId, fromId, data){
   }
   if (data === 'np:confirm:no'){
     tmp.step = 'prompt';
-    await setJSON(keys.tmp(ADMIN_ID), tmp, 900);
+    await setJSON(fsmKey(chatId), tmp, 900);
     return reply(chatId, 'Modifie/renvoie le prompt principal :', kb([[{ text:'Retour', callback_data:'act:menu' }]]));
   }
 
