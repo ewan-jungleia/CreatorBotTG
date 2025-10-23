@@ -96,7 +96,8 @@ async function askPrompt(chatId, userId){
   const tmp = await getJSON(keys.tmp);
   tmp.step = 'prompt';
   await setJSON(keys.tmp, tmp, 1800);
-  await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
 }
 
 function summarizePrompt(p){
@@ -110,7 +111,8 @@ async function confirmPrompt(chatId, userId){
   const summary = summarizePrompt(tmp.prompt || '');
   tmp.step = 'confirm';
   await setJSON(keys.tmp, tmp, 1800);
-  await reply(
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+await reply(
     chatId,
     `Résumé compris :\n\n${esc(summary)}\n\nValider ?`,
     kb([
@@ -193,6 +195,7 @@ async function handleStart(chatId, userId){
 }
 
 async function handleText(chatId, userId, text){
+  try{ console.log('[handleText]',{ chatId: chatId, userId: userId, text: text }); }catch{}
   const keys = keysForUser(userId);
   const tmp = await getJSON(keys.tmp);
 
@@ -200,14 +203,16 @@ async function handleText(chatId, userId, text){
     tmp.title = text.trim();
     tmp.step  = 'budget';
     await setJSON(keys.tmp, tmp, 1800);
-    await afterTitleShowBudget(chatId, userId);
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+await afterTitleShowBudget(chatId, userId);
     return;
   }
 
   if (tmp && tmp.step === 'prompt'){
     tmp.prompt = text;
     await setJSON(keys.tmp, tmp, 1800);
-    await confirmPrompt(chatId, userId);
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+await confirmPrompt(chatId, userId);
     return;
   }
 
@@ -215,6 +220,7 @@ async function handleText(chatId, userId, text){
 }
 
 async function handleCallback(chatId, userId, data){
+  try{ console.log('[handleCallback]',{ chatId: chatId, userId: userId, data: data }); }catch{}
   if (data === 'act:menu')   return handleStart(chatId, userId);
   if (data === 'act:new')    return askNewProjectTitle(chatId, userId);
   if (data === 'act:list')   return listProjects(chatId, userId);
@@ -236,12 +242,18 @@ async function handleCallback(chatId, userId, data){
     const tmp = (await getJSON(keys.tmp)) || {};
     const [, kind, valStr] = data.split(':');
 
-    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
-    if (kind === 'al'){  tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800);
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'al'){  tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800);
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+return afterTitleShowBudget(chatId, userId); }
     if (kind === 'budget' && valStr === 'ok'){ return askPrompt(chatId, userId); }
     if (kind === 'confirm'){
       if (valStr === 'yes') return createProjectFromTmp(chatId, userId);
-      if (valStr === 'no'){ tmp.step='prompt'; await setJSON(keys.tmp, tmp, 1800); return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]])); }
+      if (valStr === 'no'){ tmp.step='prompt'; await setJSON(keys.tmp, tmp, 1800);
+  try{ console.log('[FSM] tmp ->', tmp); }catch{}
+return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]])); }
     }
   }
 
