@@ -40,40 +40,53 @@ async function handleStart(chatId){
 
 function backToMenuKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
 
-async function askTitle(chatId, uid){
+async function safeSetTmp(uid, obj, ttl=900){
   const keys = keysForUser();
-  await setJSON(keys.tmp(uid), { step:'title' }, 900);
+  try{
+    await setJSON(keys.tmp(uid), obj, ttl);
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+async function safeGetTmp(uid){
+  const keys = keysForUser();
+  try{
+    return await getJSON(keys.tmp(uid));
+  }catch(e){
+    return null;
+  }
+}
+
+async function askTitle(chatId, uid){
+  const ok = await safeSetTmp(uid, { step:'title' }, 900);
+  if (!ok) return reply(chatId, '⚠️ Erreur KV (init). Réessaie.', backToMenuKB());
   await reply(chatId, 'Titre du projet ?', backToMenuKB());
 }
 
 async function askBudget(chatId, uid, title){
-  const keys = keysForUser();
-  await setJSON(keys.tmp(uid), { step:'budget', title }, 900);
+  const ok = await safeSetTmp(uid, { step:'budget', title }, 900);
+  if (!ok) return reply(chatId, '⚠️ Erreur KV (budget). Réessaie.', backToMenuKB());
   const m = kb([
     [{ text:'Cap 10€', callback_data:'np:cap:1000' }, { text:'Cap 20€', callback_data:'np:cap:2000' }],
     [{ text:'Alerte 1€', callback_data:'np:alert:100' }, { text:'Alerte 2€', callback_data:'np:alert:200' }],
     [{ text:'OK', callback_data:'np:budget:ok' }, { text:'⬅️ Annuler', callback_data:'act:menu' }]
   ]);
-  await reply(chatId, `Budget pour <b>${escapeHtml(title)}</b> ?`, m);
+  await reply(chatId, `Reçu ✅  <b>${escapeHtml(title)}</b>\n\nDéfinis le budget :`, m);
 }
 
 async function askPrompt(chatId, uid){
-  const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(uid));
-  if (!tmp) return reply(chatId,'Session expirée.', backToMenuKB());
-  tmp.step = 'prompt';
-  await setJSON(keys.tmp(uid), tmp, 900);
+  const tmp = await safeGetTmp(uid);
+  if (!tmp || !tmp.title) return reply(chatId,'⚠️ Session expirée. Relance “Nouveau projet”.', backToMenuKB());
+  await safeSetTmp(uid, { ...tmp, step:'prompt' }, 900);
   await reply(chatId, 'Envoie le <b>prompt principal</b> du projet.', backToMenuKB());
 }
 
 async function askConfirm(chatId, uid, promptText){
-  const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(uid));
-  if (!tmp) return reply(chatId,'Session expirée.', backToMenuKB());
-  tmp.step = 'confirm'; tmp.prompt = promptText;
-  await setJSON(keys.tmp(uid), tmp, 900);
-
+  const tmp = await safeGetTmp(uid);
+  if (!tmp || !tmp.title) return reply(chatId,'⚠️ Session expirée. Relance “Nouveau projet”.', backToMenuKB());
   const summary = String(promptText).split('\n').map(l=>l.trim()).filter(Boolean).slice(0,10).join('\n').slice(0,700);
+  await safeSetTmp(uid, { ...tmp, step:'confirm', prompt: promptText }, 900);
   const m = kb([
     [{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier', callback_data:'np:confirm:no' }],
     [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
@@ -83,8 +96,8 @@ async function askConfirm(chatId, uid, promptText){
 
 async function createProjectFromTmp(chatId, uid){
   const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(uid));
-  if (!tmp || !tmp.title || !tmp.prompt) return reply(chatId,'Session incomplète.', backToMenuKB());
+  const tmp = await safeGetTmp(uid);
+  if (!tmp || !tmp.title || !tmp.prompt) return reply(chatId,'⚠️ Session incomplète.', backToMenuKB());
 
   const list = (await getJSON(keys.projectsList)) || [];
   const pid = String(Date.now());
@@ -197,8 +210,16 @@ async function buildZip(chatId, pid){
 
 async function handleText(chatId, fromId, text){
   if (!isAdmin(fromId)) return;
-  const keys = keysForUser();
-  const tmp = await getJSON(keys.tmp(fromId));
+
+  // Commande debug (admin only)
+  if (text.trim() === '/debug'){
+    const keys = keysForUser();
+    const tmp = await getJSON(keys.tmp(fromId));
+    await reply(chatId, `<b>DEBUG TMP</b>\n<code>${escapeHtml(JSON.stringify(tmp,null,2))}</code>`, backToMenuKB());
+    return;
+  }
+
+  const tmp = await safeGetTmp(fromId);
 
   if (tmp?.step === 'title'){
     const title = text.trim();
@@ -220,12 +241,11 @@ async function handleCallback(chatId, fromId, data){
   if (data === 'act:reset') { await ensureGlobalDefaults(); return handleStart(chatId); }
 
   if (data.startsWith('np:')){
-    const keys = keysForUser();
-    const tmp = (await getJSON(keys.tmp(fromId))) || {};
+    const tmp = (await safeGetTmp(fromId)) || {};
     const [, sub, val] = data.split(':');
 
-    if (sub === 'cap'){ tmp.capCents = Number(val); await setJSON(keys.tmp(fromId), { ...tmp, step:'budget' }, 900); return; }
-    if (sub === 'alert'){ tmp.alertCents = Number(val); await setJSON(keys.tmp(fromId), { ...tmp, step:'budget' }, 900); return; }
+    if (sub === 'cap'){ await safeSetTmp(fromId, { ...tmp, capCents:Number(val)||0, step:'budget' }, 900); return; }
+    if (sub === 'alert'){ await safeSetTmp(fromId, { ...tmp, alertCents:Number(val)||0, step:'budget' }, 900); return; }
     if (sub === 'budget' && val === 'ok'){ return askPrompt(chatId, fromId); }
     if (sub === 'confirm' && val === 'yes'){ return createProjectFromTmp(chatId, fromId); }
     if (sub === 'confirm' && val === 'no'){ return askPrompt(chatId, fromId); }
@@ -246,7 +266,7 @@ async function handleCallback(chatId, fromId, data){
   }
 }
 
-/* HTTP */
+/* Webhook */
 
 export default async function handler(req,res){
   if (req.method === 'GET') return res.status(200).send('OK');
@@ -276,6 +296,8 @@ export default async function handler(req,res){
 
     return res.json({ ok:true });
   }catch(e){
+    // surface l'erreur pour debuggage rapide dans Telegram
+    try{ await reply(process.env.ADMIN_TELEGRAM_ID, `⚠️ Webhook error: <code>${escapeHtml(String(e))}</code>`); }catch{}
     return res.status(200).json({ ok:true, error: String(e) });
   }
 }
