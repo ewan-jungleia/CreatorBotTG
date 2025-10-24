@@ -79,7 +79,37 @@ async function showConfirm(chatId, uid){
 }
 
 async function handleText(chatId, uid, text){
-  const tmp = await getTMP(uid);
+  
+  {
+    const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
+    const keys = keysForUser(String(userId));
+    const tmp = (await getJSON(keys.tmp)) || {};
+    if (tmp.step === 'secrets') {
+      const lines = String(text||'').split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+      const envs = {};
+      for (const l of lines){
+        const m = l.match(/^([A-Z0-9_]+)s*=s*(.+)$/);
+        if (m) envs[m[1]] = m[2];
+      }
+      tmp.secrets = Object.assign({}, tmp.secrets||{}, envs);
+      await setJSON(keys.tmp, tmp, 1800);
+
+      const need = ['TELEGRAM_BOT_TOKEN','OPENAI_API_KEY','KV_REST_API_URL','KV_REST_API_TOKEN'];
+      const missing = need.filter(k=>!tmp.secrets?.[k]);
+
+      if (missing.length){
+        await reply(chatId, "Reçu. Il manque encore : " + missing.join(', ') + ". Ajoute-les (même format KEY=VALUE).");
+      }else{
+        const kb = kbInline([
+          [{ text:'🚀 Générer le projet', callback_data:'gen:go' }],
+          [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+        ]);
+        await reply(chatId, "Parfait, j’ai tout. Prêt à **générer le projet** (code + README).", kb);
+      }
+      return;
+    }
+  }
+const tmp = await getTMP(uid);
   if (!tmp) return showMenu(chatId);
 
   if (tmp.step === 'title'){
@@ -105,7 +135,56 @@ async function handleText(chatId, uid, text){
 }
 
 async function handleCallback(chatId, uid, data){
-  const tmp = await getTMP(uid) || {};
+  
+  
+  
+  
+  if (data && data.startsWith('gen:go')) {
+    const { keysForUser, getJSON } = await import('./_kv.js');
+    const keys = keysForUser(String(userId));
+    const tmp = (await getJSON(keys.tmp)) || {};
+    await reply(chatId, "OK, je génère les fichiers du projet (code + README)…");
+    // Ici, tu brancheras la vraie génération ZIP/Git. Pour l’instant on confirme.
+    await reply(chatId, "✅ Projet généré (brouillon). Étape suivante: packaging ZIP et déploiement automatique.");
+    return;
+  }
+if (data && data.startsWith('sec:help')) {
+    await reply(chatId, "• TELEGRAM_BOT_TOKEN : @BotFather → /newbot → Copier le token.\n• OPENAI_API_KEY : https://platform.openai.com/\n• KV (Upstash) : créer une base REST et récupérer URL & TOKEN.");
+    return;
+  }
+if (data && data.startsWith('plan:ok')) {
+    const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
+    const keys = keysForUser(String(userId));
+    const tmp = (await getJSON(keys.tmp)) || {};
+    tmp.step = 'secrets';
+    await setJSON(keys.tmp, tmp, 1800);
+    const kb = kbInline([
+      [{ text:'❓ Où trouver les tokens ?', callback_data:'sec:help' }],
+      [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+    ]);
+    await reply(chatId,
+      "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\n" +
+      "TELEGRAM_BOT_TOKEN=xxxx\nOPENAI_API_KEY=xxxx\nKV_REST_API_URL=xxxx\nKV_REST_API_TOKEN=xxxx\n\n" +
+      "Tu peux ne fournir que ceux dont tu disposes, je te dirai s’il en manque.",
+      kb
+    );
+    return;
+  }
+// Suite après validation du résumé
+  if (data && data.startsWith('sum:ok')) {
+    await onSummaryOk(chatId, userId);
+    return;
+  }
+  if (data && data.startsWith('sum:edit')) {
+    const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
+    const keys = keysForUser(String(userId));
+    const tmp = (await getJSON(keys.tmp)) || {};
+    tmp.step = 'prompt';
+    await setJSON(keys.tmp, tmp, 1800);
+    await reply(chatId, 'Ok, renvoie le prompt principal (objectif, contraintes, livrables, etc.).');
+    return;
+  }
+const tmp = await getTMP(uid) || {};
 
   if (data === 'act:menu'){ await setTMP(uid, null); await showMenu(chatId); return; }
   if (data === 'act:new'){ await askTitle(chatId, uid); return; }
@@ -170,4 +249,56 @@ export default async function handler(req,res){
   }catch(e){
     return res.status(200).json({ ok:false, error: String(e) });
   }
+}
+
+
+async function askOpenAI(messages){
+  const api = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const r = await fetch('https://api.openai.com/v1/chat/completions',{
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+api },
+    body: JSON.stringify({ model, messages, temperature:0.3 })
+  });
+  const j = await r.json();
+  const txt = j?.choices?.[0]?.message?.content?.trim() || '';
+  return txt;
+}
+
+async function onSummaryOk(chatId, userId){
+  const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
+  const keys = keysForUser(String(userId));
+  const tmp  = (await getJSON(keys.tmp)) || {};
+  const title = tmp.title || 'Projet';
+  const prompt = tmp.prompt || '';
+
+  const sys = `Tu es un architecte logiciel Telegram ultra rigoureux.
+Réponds en français, format clair avec titres **gras** et listes.
+Tu dois fournir: Faisabilité, Plan stratégique (phases), Plan d'action (tâches), Besoins (inputs & secrets), Livrables (code, README, déploiement).
+Sois concret, pas verbeux.`;
+
+  const usr = `Titre: ${title}
+Brief utilisateur:
+${prompt}`;
+
+  // Message d'attente
+  await reply(chatId, 'Je prépare la faisabilité et le plan…');
+
+  const plan = await askOpenAI([
+    { role:'system', content: sys },
+    { role:'user', content: usr }
+  ]);
+
+  // Mémorise et propose la suite
+  tmp.step = 'plan';
+  tmp.plan = plan;
+  await setJSON(keys.tmp, tmp, 1800);
+
+  const kb = kbInline([
+    [{ text:'✅ Continuer', callback_data:'plan:ok' }],
+    [{ text:'✏️ Modifier le brief', callback_data:'sum:edit' }],
+    [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+  ]);
+
+  await reply(chatId, `**Faisabilité & Plan pour ${esc(title)}**\n\n${plan}`, kb);
 }
