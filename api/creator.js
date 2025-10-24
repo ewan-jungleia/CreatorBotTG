@@ -160,7 +160,8 @@ async function handleText(chatId, uid, text){
 }
 
 async function handleCallback(chatId, uid, data){
-  const tmp = (await getTMP(uid)) || {};
+  if (data === 'help:tokens') { await reply(chatId, TOKENS_GUIDE); return; }
+const tmp = (await getTMP(uid)) || {};
 
   if (data === 'act:menu'){ await setTMP(uid, null); await showMenu(chatId); return; }
   if (data === 'act:new'){ await askTitle(chatId, uid); return; }
@@ -183,8 +184,7 @@ async function handleCallback(chatId, uid, data){
   if (data === 'plan:ok'){
     await setTMP(uid, { ...tmp, step:'secrets' });
     await reply(chatId,
-      "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\n" +
-      "TELEGRAM_BOT_TOKEN=xxxx\nOPENAI_API_KEY=xxxx\nKV_REST_API_URL=xxxx\nKV_REST_API_TOKEN=xxxx\n\n" +
+      "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\nTELEGRAM_BOT_TOKEN=xxxx\nOPENAI_API_KEY=xxxx  *(optionnel pour l’écho-bot)*\nKV_REST_API_URL=xxxx *(optionnel pour l’écho-bot)*\nKV_REST_API_TOKEN=xxxx *(optionnel pour l’écho-bot)*\n\n" +
       "Tu peux ne fournir que ceux dont tu disposes, je te dirai s’il en manque.",
       kb([
         [{ text:'❓ Où trouver les tokens ?', callback_data:'sec:help' }],
@@ -210,6 +210,27 @@ async function handleCallback(chatId, uid, data){
 }
 
 /* ==== HTTP entry ==== */
+
+/* GUIDE_TOKENS_START */
+const TOKENS_GUIDE = [
+  '🔑 *Où trouver les tokens ?*\n',
+  '*1) TELEGRAM_BOT_TOKEN*',
+  '  - Ouvre Telegram → cherche *@BotFather*',
+  '  - Envoie */newbot* → choisis le nom et l’identifiant',
+  '  - Récupère le *token* (ex: 123456:AA... )',
+  '',
+  '*2) OPENAI_API_KEY (optionnel pour l’écho-bot)*',
+  '  - Va sur platform.openai.com/api-keys → *Create new secret key*',
+  '  - Copie la clé (ex: sk-proj-... ).',
+  '',
+  '*3) Upstash KV (optionnel pour l’écho-bot)*',
+  '  - Va sur upstash.com → Login → crée une base *Redis REST*',
+  '  - Onglet *REST API* → récupère *REST URL* et *REST TOKEN*',
+  '',
+  '_Pour l’**écho-bot** de test: seul **TELEGRAM_BOT_TOKEN** est requis._'
+].join('\n');
+/* GUIDE_TOKENS_END */
+
 export default async function handler(req,res){
   if (req.method === 'GET') return res.status(200).send('OK');
   if (req.method !== 'POST') return res.status(405).json({ ok:false });
