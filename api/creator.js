@@ -375,9 +375,8 @@ async function _hookTokenOnly(chatId, text, state){
   state.step = "secrets"; 
   return true;
 }
-\n
+
 function __eatTelegramToken(text) {
   const m = /^\s*TELEGRAM_BOT_TOKEN\s*=\s*(\S+)\s*$/i.exec(text || '');
   return m ? m[1].trim() : null;
 }
-\n
