@@ -1,4 +1,4 @@
-import { getJSON, setJSON, del, keysForUser, estimateTokens, addUsage, pricePer1k, now } from './_kv.js';
+import { getJSON, setJSON, del, keysForUser, addUsage, pricePer1k, now } from './_kv.js';
 import AdmZip from 'adm-zip';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -23,7 +23,6 @@ function mainMenu(){
   ]);
 }
 
-/* ===== Budget global ===== */
 function fmtCents(c){ return `${(c/100).toFixed(2).replace('.',',')} €`; }
 
 async function ensureBudgetDefaults(userId){
@@ -62,7 +61,6 @@ async function budgetResetSpend(){
   await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] });
 }
 
-/* ===== Assistant Nouveau Projet ===== */
 function askTitleKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
 
 async function askNewProjectTitle(chatId, userId){
@@ -96,8 +94,7 @@ async function askPrompt(chatId, userId){
   const tmp = await getJSON(keys.tmp);
   tmp.step = 'prompt';
   await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
+  await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
 }
 
 function summarizePrompt(p){
@@ -111,8 +108,7 @@ async function confirmPrompt(chatId, userId){
   const summary = summarizePrompt(tmp.prompt || '');
   tmp.step = 'confirm';
   await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-await reply(
+  await reply(
     chatId,
     `Résumé compris :\n\n${esc(summary)}\n\nValider ?`,
     kb([
@@ -145,13 +141,11 @@ async function createProjectFromTmp(chatId, userId){
   await reply(chatId, `✅ Projet <b>${esc(project.title)}</b> créé.\nRetrouve-le dans 📁 Projets.`, kb([[{ text:'📁 Projets', callback_data:'act:list' }],[{ text:'⬅️ Menu', callback_data:'act:menu' }]]));
 }
 
-/* ===== Projets ===== */
 async function listProjects(chatId, userId){
   const keys = keysForUser(userId);
   const list = (await getJSON(keys.projectsList)) || [];
   if (!list.length){
-    await reply(chatId, 'Aucun projet. Lance un nouveau projet.',
-      kb([[{ text:'🆕 Nouveau projet', callback_data:'act:new' }],[{ text:'⬅️ Retour', callback_data:'act:menu' }]]));
+    await reply(chatId, 'Aucun projet. Lance un nouveau projet.', kb([[{ text:'🆕 Nouveau projet', callback_data:'act:new' }],[{ text:'⬅️ Retour', callback_data:'act:menu' }]]));
     return;
   }
   const rows = list.map(p => [{ text:`📁 ${p.title} (${p.id})`, callback_data:`prj:open:${p.id}` }]);
@@ -171,7 +165,6 @@ async function openProject(chatId, userId, pid){
   await reply(chatId, `Projet <b>${esc(p.title)}</b>\nVersion: ${p.version || 'v1'}\nStatus: ${p.status || 'draft'}`, kb(rows));
 }
 
-/* ===== ZIP minimal (placeholder) ===== */
 async function makeZipForProject(project){
   const zip = new AdmZip();
   const readme = `# ${project.title}\n\nVersion: ${project.version}\n\n## Déploiement rapide (Vercel)\n1) Crée un projet Vercel\n2) Ajoute les variables d'environnement\n3) Déploie\n`;
@@ -188,14 +181,12 @@ async function sendZip(chatId, buffer, filename){
   await fetch(`${API}/sendDocument`, { method:'POST', body: form });
 }
 
-/* ===== Entrées utilisateur ===== */
 async function handleStart(chatId, userId){
   await ensureBudgetDefaults(userId);
   await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', mainMenu());
 }
 
 async function handleText(chatId, userId, text){
-  try{ console.log('[handleText]',{ chatId: chatId, userId: userId, text: text }); }catch{}
   const keys = keysForUser(userId);
   const tmp = await getJSON(keys.tmp);
 
@@ -203,16 +194,14 @@ async function handleText(chatId, userId, text){
     tmp.title = text.trim();
     tmp.step  = 'budget';
     await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-await afterTitleShowBudget(chatId, userId);
+    await afterTitleShowBudget(chatId, userId);
     return;
   }
 
   if (tmp && tmp.step === 'prompt'){
     tmp.prompt = text;
     await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-await confirmPrompt(chatId, userId);
+    await confirmPrompt(chatId, userId);
     return;
   }
 
@@ -220,7 +209,6 @@ await confirmPrompt(chatId, userId);
 }
 
 async function handleCallback(chatId, userId, data){
-  try{ console.log('[handleCallback]',{ chatId: chatId, userId: userId, data: data }); }catch{}
   if (data === 'act:menu')   return handleStart(chatId, userId);
   if (data === 'act:new')    return askNewProjectTitle(chatId, userId);
   if (data === 'act:list')   return listProjects(chatId, userId);
@@ -231,10 +219,7 @@ async function handleCallback(chatId, userId, data){
     const [, kind, deltaStr] = data.split(':');
     if (kind === 'raz'){ await budgetResetSpend(); return showBudget(chatId, userId); }
     const delta = Number(deltaStr);
-    if (kind === 'cap' || kind === 'al'){
-      await budgetAdjust(userId, kind, delta);
-      return showBudget(chatId, userId);
-    }
+    if (kind === 'cap' || kind === 'al'){ await budgetAdjust(userId, kind, delta); return showBudget(chatId, userId); }
   }
 
   if (data.startsWith('np:')){
@@ -242,18 +227,12 @@ async function handleCallback(chatId, userId, data){
     const tmp = (await getJSON(keys.tmp)) || {};
     const [, kind, valStr] = data.split(':');
 
-    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-return afterTitleShowBudget(chatId, userId); }
-    if (kind === 'al'){  tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'al'){  tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
     if (kind === 'budget' && valStr === 'ok'){ return askPrompt(chatId, userId); }
     if (kind === 'confirm'){
       if (valStr === 'yes') return createProjectFromTmp(chatId, userId);
-      if (valStr === 'no'){ tmp.step='prompt'; await setJSON(keys.tmp, tmp, 1800);
-  try{ console.log('[FSM] tmp ->', tmp); }catch{}
-return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]])); }
+      if (valStr === 'no'){ tmp.step='prompt'; await setJSON(keys.tmp, tmp, 1800); return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]])); }
     }
   }
 
@@ -265,11 +244,9 @@ return reply(chatId,'OK, renvoie le prompt modifié.', kb([[{ text:'⬅️ Annul
   }
 }
 
-/* ===== HTTP entry ===== */
 export default async function handler(req,res){
   if (req.method === 'GET') return res.status(200).send('OK');
   if (req.method !== 'POST') return res.status(405).json({ ok:false });
-
   try{
     const update = req.body || {};
     const msg = update.message;

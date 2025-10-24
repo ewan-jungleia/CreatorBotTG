@@ -4,10 +4,7 @@ async function kvFetch(path, method = 'GET', body) {
   const url = `${KV_REST_API_URL}${path}`;
   const res = await fetch(url, {
     method,
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
+    headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   });
   if (!res.ok) throw new Error(`KV ${method} ${path} -> ${res.status}`);
@@ -19,8 +16,9 @@ function k(...parts) { return [NS, ...parts].join(':'); }
 
 export async function getJSON(key, fallback = null) {
   const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
-  if (!r || !('result' in r) || r.result === null) return fallback;
-  try { return JSON.parse(r.result); } catch { return fallback; }
+  const raw = (r && (r.result !== undefined ? r.result : r.value)) ?? null;
+  if (raw === null) return fallback;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return fallback; }
 }
 
 export async function setJSON(key, val, ttlSec) {
@@ -63,8 +61,8 @@ export function estimateTokens(str){
 }
 
 export async function addUsage({ projectId, tokens }) {
-  const userUsageKey = k('usage','global');
-  const projUsageKey = k('usage','project', projectId || 'none');
+  const userUsageKey = `${NS}:usage:global`;
+  const projUsageKey = `${NS}:usage:project:${projectId || 'none'}`;
   const p = pricePer1k();
   const euros = (tokens/1000)*p;
 
