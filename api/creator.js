@@ -137,7 +137,8 @@ async function handleText(chatId, uid, text){
     return;
   }
 
-  if (tmp.step === 'prompt'){
+  
+    if (tmp.step === 'prompt'){
     const userPrompt = String(text||'').trim();
     await reply(chatId, 'Je réfléchis au résumé…');
     let summary = '';
@@ -156,7 +157,28 @@ async function handleText(chatId, uid, text){
     return;
   }
 
-  await showMenu(chatId);
+  
+    "
+  if (tmp.step === 'secrets'){
+" .
+    "    const tok = (function(t){ const m=/^\s*TELEGRAM_BOT_TOKEN\s*=\s*(\S+)\s*i.exec(t||""); return m?m[1].trim():null; })(text);
+" .
+    "    if (!tok){ await reply(chatId, "Envoie le token au format :\nTELEGRAM_BOT_TOKEN=123456:ABC...\n(ou clique sur ❓ Où trouver les tokens ?)"); return; }
+" .
+    "    const title = tmp.title || 'EchoBot';
+" .
+    "    await setTMP(uid, { ...tmp, step:'secrets', echoTok: tok });
+" .
+    "    await echoReady(chatId, title, tok);
+" .
+    "    return;
+" .
+    "  }
+
+"
+    . "  await showMenu(chatId);
+"
+  
 }
 
 async function handleCallback(chatId, uid, data){
