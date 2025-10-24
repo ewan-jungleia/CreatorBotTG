@@ -14,25 +14,51 @@ async function kvFetch(path, method = 'GET', body) {
   return res.json();
 }
 
-const NS = 'creatorbottg';
-function k(...parts) { return [NS, ...parts].join(':'); }
+// Dépaquetage profond (gère {result:{value:"…"}}, strings JSON imbriquées, etc.)
+function deepUnwrap(v) {
+  let cur = v;
+  let depth = 0;
+  while (depth < 6) {
+    // Upstash peut renvoyer { result: X }
+    if (cur && typeof cur === 'object' && 'result' in cur) {
+      cur = cur.result;
+      depth++; continue;
+    }
+    // Upstash peut renvoyer { value: X }
+    if (cur && typeof cur === 'object' && 'value' in cur && Object.keys(cur).length === 2 && 'ex' in cur) {
+      // cas diag: { value:"json", ex:900 }
+      cur = cur.value;
+      depth++; continue;
+    }
+    if (cur && typeof cur === 'object' && 'value' in cur && Object.keys(cur).length === 1) {
+      cur = cur.value;
+      depth++; continue;
+    }
+    // Si c'est une string JSON, on parse
+    if (typeof cur === 'string') {
+      const s = cur.trim();
+      if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+        try { cur = JSON.parse(s); depth++; continue; } catch { /* stop */ }
+      }
+    }
+    break;
+  }
+  return cur;
+}
 
 export async function getJSON(key, fallback = null) {
-  const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
-  if (!r || r.result == null) return fallback;
-
-  // Upstash KV peut renvoyer {result: "string"} ou {result: {value:"string"}}
-  const raw = (typeof r.result === 'object' && 'value' in r.result) ? r.result.value : r.result;
-
   try {
-    // Si c'est déjà une string JSON, on parse; sinon on renvoie brut
-    return (typeof raw === 'string') ? JSON.parse(raw) : raw;
+    const r = await kvFetch(`/get/${encodeURIComponent(key)}`);
+    if (r == null) return fallback;
+    const un = deepUnwrap(r);
+    return (un == null) ? fallback : un;
   } catch {
     return fallback;
   }
 }
 
 export async function setJSON(key, val, ttlSec) {
+  // Toujours stocker un JSON propre (pas de sur-emballage)
   const body = { value: JSON.stringify(val) };
   if (ttlSec) body.ttl = ttlSec;
   await kvFetch(`/set/${encodeURIComponent(key)}`, 'POST', body);
@@ -44,6 +70,9 @@ export async function del(key) {
   return true;
 }
 
+const NS = 'creatorbottg';
+function k(...parts) { return [NS, ...parts].join(':'); }
+
 export function keysForUser(uid) {
   return {
     budgetGlobal: k('budget','global'),
@@ -51,7 +80,7 @@ export function keysForUser(uid) {
     project: (pid) => k('project', pid),
     secretsGlobal: k('secrets','global'),
     secretsProject: (pid) => k('secrets','project', pid),
-    tmp: k('tmp', uid),                // ⚠️ mémoire par utilisateur
+    tmp: k('tmp', uid),      // mémoire par utilisateur
     usageGlobal: k('usage','global'),
     usageProject: (pid) => k('usage','project', pid)
   };
@@ -72,8 +101,8 @@ export function estimateTokens(str){
 }
 
 export async function addUsage({ projectId, tokens }) {
-  const userUsageKey = k('usage','global');
-  const projUsageKey = k('usage','project', projectId || 'none');
+  const userUsageKey = `${NS}:usage:global`;
+  const projUsageKey = `${NS}:usage:project:${projectId || 'none'}`;
   const p = pricePer1k();
   const euros = (tokens/1000)*p;
 
