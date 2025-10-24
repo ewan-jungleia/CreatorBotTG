@@ -2,6 +2,7 @@ const API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const ADMIN = String(process.env.ADMIN_TELEGRAM_ID || "").trim();
 
 import { getJSON, setJSON } from './_kv.js';
+import { buildEchoBotZip } from './builder.js';
 import { summarizePrompt } from './_ai.js';
 
 /* ==== Utils ==== */
@@ -240,4 +241,14 @@ export default async function handler(req,res){
   }catch(e){
     return res.status(200).json({ ok:false, error: String(e) });
   }
+}
+
+
+function parseSecrets(text){
+  const out = {};
+  String(text||'').split(/\r?\n/).forEach(line=>{
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.+)\s*$/i);
+    if(m) out[m[1].toUpperCase()] = m[2];
+  });
+  return out;
 }

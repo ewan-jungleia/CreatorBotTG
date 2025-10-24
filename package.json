@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "adm-zip": "0.5.10"
+    "adm-zip": "0.5.10",
+    "jszip": "^3.10.1"
   },
   "engines": {
     "node": "20.x"
