@@ -4,7 +4,6 @@ import AdmZip from 'adm-zip';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_TELEGRAM_ID || '0');
 const API = `https://api.telegram.org/bot${TOKEN}`;
-
 function isAdmin(id){ return Number(id) === ADMIN_ID; }
 function kb(rows){ return { inline_keyboard: rows }; }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -12,6 +11,9 @@ async function reply(chatId, text, markup){
   const body = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (markup) body.reply_markup = markup;
   await fetch(`${API}/sendMessage`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+}
+async function adminLog(text){
+  try{ if (ADMIN_ID) await reply(ADMIN_ID, `LOG: ${text}`); }catch{}
 }
 function mainMenu(){
   return kb([
@@ -44,17 +46,24 @@ async function showBudget(chatId, userId){
   ];
   await reply(chatId, txt, kb(rows));
 }
+
 async function budgetAdjust(userId, kind, delta){
   const keys = keysForUser(userId);
   const b = (await getJSON(keys.budgetGlobal)) || { capCents:0, alertStepCents:0 };
   if (kind === 'cap') b.capCents = Math.max(0, (b.capCents||0) + delta);
   if (kind === 'al')  b.alertStepCents = Math.max(0, (b.alertStepCents||0) + delta);
   await setJSON(keys.budgetGlobal, b);
+  await adminLog(`budgetAdjust kind=${kind} delta=${delta} -> cap=${b.capCents} al=${b.alertStepCents}`);
 }
-async function budgetResetSpend(){ await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] }); }
+async function budgetResetSpend(){ await setJSON('creatorbottg:usage:global', { tokens:0, euros:0, history:[] }); await adminLog('budgetResetSpend'); }
 
 function askTitleKB(){ return kb([[{ text:'⬅️ Retour menu', callback_data:'act:menu' }]]); }
-async function askNewProjectTitle(chatId, userId){ const keys = keysForUser(userId); await setJSON(keys.tmp, { step:'title' }, 900); await reply(chatId, 'Titre du projet ?', askTitleKB()); }
+async function askNewProjectTitle(chatId, userId){
+  const keys = keysForUser(userId);
+  await setJSON(keys.tmp, { step:'title' }, 900);
+  await adminLog(`set tmp step=title key=${keys.tmp}`);
+  await reply(chatId, 'Titre du projet ?', askTitleKB());
+}
 function npBudgetKB(){
   return kb([
     [{ text:'Cap 10€', callback_data:'np:cap:1000' }, { text:'Cap 20€', callback_data:'np:cap:2000' }],
@@ -66,6 +75,7 @@ function npBudgetKB(){
 async function afterTitleShowBudget(chatId, userId){
   const keys = keysForUser(userId);
   const tmp = await getJSON(keys.tmp);
+  await adminLog(`get tmp after title -> ${JSON.stringify(tmp)}`);
   const cap = tmp?.capCents || 0;
   const al  = tmp?.alertStepCents || 0;
   const txt = `Budget pour <b>${esc(tmp?.title||'')}</b>
@@ -78,6 +88,7 @@ async function askPrompt(chatId, userId){
   const tmp = await getJSON(keys.tmp);
   tmp.step = 'prompt';
   await setJSON(keys.tmp, tmp, 1800);
+  await adminLog(`set tmp step=prompt -> ${JSON.stringify(tmp)}`);
   await reply(chatId, `Envoie le <b>prompt principal</b> pour <i>${esc(tmp.title)}</i>.`, kb([[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
 }
 function summarizePrompt(p){ const lines = String(p).split('\n').map(l=>l.trim()).filter(Boolean); return lines.slice(0,10).join('\n').slice(0,700); }
@@ -87,6 +98,7 @@ async function confirmPrompt(chatId, userId){
   const summary = summarizePrompt(tmp.prompt || '');
   tmp.step = 'confirm';
   await setJSON(keys.tmp, tmp, 1800);
+  await adminLog(`set tmp step=confirm -> ${JSON.stringify(tmp)}`);
   await reply(chatId, `Résumé compris :\n\n${esc(summary)}\n\nValider ?`, kb([[{ text:'✅ Valider', callback_data:'np:confirm:yes' }, { text:'✏️ Modifier', callback_data:'np:confirm:no' }],[{ text:'⬅️ Annuler', callback_data:'act:menu' }]]));
 }
 async function createProjectFromTmp(chatId, userId){
@@ -99,6 +111,7 @@ async function createProjectFromTmp(chatId, userId){
   list.unshift({ id: pid, title: project.title, createdAt: now(), version: project.version });
   await setJSON(keys.projectsList, list);
   await del(keys.tmp);
+  await adminLog(`project created pid=${pid} title="${project.title}"`);
   await reply(chatId, `✅ Projet <b>${esc(project.title)}</b> créé.\nRetrouve-le dans 📁 Projets.`, kb([[{ text:'📁 Projets', callback_data:'act:list' }],[{ text:'⬅️ Menu', callback_data:'act:menu' }]]));
 }
 async function listProjects(chatId, userId){
@@ -124,11 +137,13 @@ async function handleStart(chatId, userId){ await ensureBudgetDefaults(userId); 
 async function handleText(chatId, userId, text){
   const keys = keysForUser(userId);
   const tmp = await getJSON(keys.tmp);
-  if (tmp && tmp.step === 'title'){ tmp.title = text.trim(); tmp.step = 'budget'; await setJSON(keys.tmp, tmp, 1800); await afterTitleShowBudget(chatId, userId); return; }
-  if (tmp && tmp.step === 'prompt'){ tmp.prompt = text; await setJSON(keys.tmp, tmp, 1800); await confirmPrompt(chatId, userId); return; }
+  await adminLog(`handleText step=${tmp?.step||'none'} text="${text}" key=${keys.tmp}`);
+  if (tmp && tmp.step === 'title'){ tmp.title = text.trim(); tmp.step = 'budget'; await setJSON(keys.tmp, tmp, 1800); await adminLog(`set tmp step=budget -> ${JSON.stringify(tmp)}`); await afterTitleShowBudget(chatId, userId); return; }
+  if (tmp && tmp.step === 'prompt'){ tmp.prompt = text; await setJSON(keys.tmp, tmp, 1800); await adminLog(`set tmp prompt -> ${JSON.stringify(tmp)}`); await confirmPrompt(chatId, userId); return; }
   await reply(chatId, 'Utilise le menu ci-dessous.', mainMenu());
 }
 async function handleCallback(chatId, userId, data){
+  await adminLog(`handleCallback data=${data}`);
   if (data === 'act:menu') return handleStart(chatId, userId);
   if (data === 'act:new') return askNewProjectTitle(chatId, userId);
   if (data === 'act:list') return listProjects(chatId, userId);
@@ -144,8 +159,8 @@ async function handleCallback(chatId, userId, data){
     const keys = keysForUser(userId);
     const tmp = (await getJSON(keys.tmp)) || {};
     const [, kind, valStr] = data.split(':');
-    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
-    if (kind === 'al'){ tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'cap'){ tmp.capCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); await adminLog(`tmp.cap=${tmp.capCents}`); return afterTitleShowBudget(chatId, userId); }
+    if (kind === 'al'){ tmp.alertStepCents = Number(valStr); await setJSON(keys.tmp, tmp, 1800); await adminLog(`tmp.alert=${tmp.alertStepCents}`); return afterTitleShowBudget(chatId, userId); }
     if (kind === 'budget' && valStr === 'ok') return askPrompt(chatId, userId);
     if (kind === 'confirm'){
       if (valStr === 'yes') return createProjectFromTmp(chatId, userId);
@@ -183,6 +198,7 @@ export default async function handler(req,res){
     }
     return res.json({ ok:true });
   }catch(e){
+    try{ await adminLog(`ERROR ${String(e)}`);}catch{}
     return res.status(200).json({ ok:true, error: String(e) });
   }
 }
