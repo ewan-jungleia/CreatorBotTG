@@ -334,3 +334,22 @@ async function _hookKvEcho(chatId, text, title) {
   return true;
 }
 
+
+async function echoReady(chatId, title, token){
+  await reply(chatId,
+    "✅ Token reçu. Prêt à générer « "+(title||"EchoBot")+" ». ",
+    kb([[{text:"🚀 Générer le projet", callback_data:"echo:gen"}]])
+  );
+}
+
+async function _hookTokenOnly(chatId, text, state){
+  const m = (text||"").match(/\bTELEGRAM_BOT_TOKEN\s*=\s*(\S+)/i);
+  if(!m) return false;
+  const tok = m[1].trim();
+  state.tmp = state.tmp || {};
+  state.tmp.echoTok = tok;
+  await echoReady(chatId, state?.tmp?.title || state?.title || "EchoBot", tok);
+  // On reste dans le flow, pas de retour menu :
+  state.step = "secrets"; 
+  return true;
+}
