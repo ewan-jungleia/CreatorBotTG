@@ -1,30 +1,48 @@
-import { readFileSync, writeFileSync } from 'fs';
+import fs from "fs";
 
-const FILE = 'api/creator.js';
-let s = readFileSync(FILE, 'utf8');
+const FILE = "api/creator.js";
+let s = fs.readFileSync(FILE, "utf8");
+const before = s;
 
-// 1) Nettoyage des lignes parasites éventuelles
-s = s.replace(/^\s*\\n\s*$/mg, '').replace(/^\s*%\s*$/mg, '');
+// Nettoyage de lignes/char parasites éventuels
+s = s.replace(/^\s*%\s*$/gm, "");
+s = s.replace(/\u0000|\u0001|\u0002|\u0003/g, "");
 
-// 2) Injection de l'étape "secrets" si absente
-if (!s.includes("tmp.step === 'secrets'")) {
-  s = s.replace(
-    /(\n\s*if\s*\(tmp\.step === 'prompt'\)[\s\S]*?return;\s*\n\s*\})/,
-    `$1
+// Ancre : on ajoute la gestion du step "secrets" juste après
+//   if (!tmp) { await showMenu(chatId); return; }
+const anchor = /if\s*\(\s*!tmp\s*\)\s*\{\s*await\s+showMenu\(\s*chatId\s*\);\s*return;\s*\}/;
 
-  if (tmp.step === 'secrets'){
-    try {
-      if (await _hookTokenOnly(chatId, text, tmp)) {
-        await setTMP(uid, tmp);
-        return;
+if (anchor.test(s) && !/tmp\.step\s*===\s*["']secrets["']/.test(s)) {
+  s = s.replace(anchor, (m) => m + `
+
+  // Step 'secrets' : attendre TELEGRAM_BOT_TOKEN=xxxx et afficher "Générer le projet"
+  if (tmp.step === "secrets") {
+    const mTok = String(text||"").match(/\\bTELEGRAM_BOT_TOKEN\\s*=\\s*(\\S+)/i);
+    if (mTok) {
+      const tok = mTok[1].trim();
+      try {
+        // si echoReady existe on l'utilise
+        await echoReady(chatId, tmp.title || "EchoBot", tok);
+      } catch {
+        // sinon on envoie un bouton "Générer le projet"
+        await reply(
+          chatId,
+          "✅ Token reçu. Cliquez sur « Générer le projet ».",
+          { reply_markup: { inline_keyboard: [[{ text: "🚀 Générer le projet", callback_data: "echo:gen" }]] } }
+        );
       }
-    } catch(e) { console.error('_hookTokenOnly error', e); }
-    await reply(chatId, "Envoie le token sous la forme :\\nTELEGRAM_BOT_TOKEN=123456789:AA...");
+      await setTMP(uid, { ...tmp, echoTok: tok, step: "secrets" });
+      return;
+    }
+    await reply(chatId, "Format attendu :\\nTELEGRAM_BOT_TOKEN=123456789:AA...");
     return;
   }
-`
-  );
+`);
 }
 
-writeFileSync(FILE, s, 'utf8');
-console.log('OK: patch applied');
+if (s !== before) {
+  fs.writeFileSync(FILE, s, "utf8");
+  console.log("✅ Patch appliqué à api/creator.js");
+} else {
+  console.log("ℹ️ Aucun changement (déjà patché)");
+}
