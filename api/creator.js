@@ -212,23 +212,44 @@ const tmp = (await getTMP(uid)) || {};
 /* ==== HTTP entry ==== */
 
 /* GUIDE_TOKENS_START */
+
 const TOKENS_GUIDE = [
-  '🔑 *Où trouver les tokens ?*\n',
-  '*1) TELEGRAM_BOT_TOKEN*',
-  '  - Ouvre Telegram → cherche *@BotFather*',
-  '  - Envoie */newbot* → choisis le nom et l’identifiant',
-  '  - Récupère le *token* (ex: 123456:AA... )',
+  '🔑 *GUIDE DÉTAILLÉ : Où trouver les tokens ?*\n',
   '',
-  '*2) OPENAI_API_KEY (optionnel pour l’écho-bot)*',
-  '  - Va sur platform.openai.com/api-keys → *Create new secret key*',
-  '  - Copie la clé (ex: sk-proj-... ).',
+  '📘 *1) TELEGRAM_BOT_TOKEN (obligatoire)*',
+  '  1. Ouvre Telegram.',
+  '  2. Cherche le compte *@BotFather* et démarre la conversation.',
+  '  3. Tape /newbot puis choisis un nom pour ton bot (ex: "Mon Bot Test").',
+  '  4. Choisis un identifiant unique (doit finir par "bot", ex: monbottest_bot).',
+  '  5. Copie le token affiché (format : 123456789:AA... ).',
+  '  6. Colle-le ici sous la forme :',
+  '     TELEGRAM_BOT_TOKEN=123456789:AA... ',
   '',
-  '*3) Upstash KV (optionnel pour l’écho-bot)*',
-  '  - Va sur upstash.com → Login → crée une base *Redis REST*',
-  '  - Onglet *REST API* → récupère *REST URL* et *REST TOKEN*',
+  '💡 *Ce token permet de lier ton projet au bot Telegram.*',
   '',
-  '_Pour l’**écho-bot** de test: seul **TELEGRAM_BOT_TOKEN** est requis._'
+  '🤖 *2) OPENAI_API_KEY (optionnelle)*',
+  '  - Sert uniquement si ton futur projet utilise l’IA (ChatGPT, génération de texte, etc.).',
+  '  1. Va sur https://platform.openai.com/',
+  '  2. Connecte-toi ou crée un compte.',
+  '  3. Clique sur ton profil (en haut à droite) → *View API Keys*.',
+  '  4. Clique sur *Create new secret key*.',
+  '  5. Copie la clé (format : sk-proj-... ).',
+  '  6. Colle-la ici sous la forme :',
+  '     OPENAI_API_KEY=sk-proj-... ',
+  '',
+  '🗄️ *3) Upstash KV (optionnel)*',
+  '  - Sert uniquement pour stocker ou partager des données entre bots.',
+  '  1. Va sur https://upstash.com/',
+  '  2. Crée un compte (Google, GitHub ou e-mail).',
+  '  3. Clique sur *Create Database* → choisis *Redis REST API*.',
+  '  4. Une fois la base créée, clique sur *REST API*.',
+  '  5. Copie :',
+  '     - REST URL  → à coller ici : KV_REST_API_URL=...',
+  '     - REST TOKEN → à coller ici : KV_REST_API_TOKEN=...',
+  '',
+  '📌 *Pour l’écho-bot de test : seul TELEGRAM_BOT_TOKEN est nécessaire.*'
 ].join('\n');
+
 /* GUIDE_TOKENS_END */
 
 export default async function handler(req,res){
