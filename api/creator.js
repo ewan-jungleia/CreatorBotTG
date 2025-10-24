@@ -78,9 +78,34 @@ async function showConfirm(chatId, uid){
   ]));
 }
 
+
 async function handleText(chatId, uid, text){
-  
-  {
+  // PATCH anti-bug: fallback par défaut sur 'title', puis enchaîne vers Budget
+  try {
+    const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
+    const keys = keysForUser(String(userId));
+    let tmp = (await getJSON(keys.tmp)) || {};
+    if (!tmp.step) { tmp.step = 'title'; await setJSON(keys.tmp, tmp, 1800); }
+
+    if (tmp.step === 'title') {
+      const title = String(text || '').trim();
+      if (!title) { await reply(chatId, 'Envoie un titre valide.'); return; }
+      tmp.title = title;
+      tmp.step = 'budget';
+      await setJSON(keys.tmp, tmp, 1800);
+
+      const kb = kbInline([
+        [{ text:'Cap 10€',  callback_data:'bud:cap:1000' }, { text:'Cap 20€',  callback_data:'bud:cap:2000' }],
+        [{ text:'Alerte 1€',callback_data:'bud:alert:100' }, { text:'Alerte 2€',callback_data:'bud:alert:200' }],
+        [{ text:'OK',      callback_data:'bud:ok'        }, { text:'⬅️ Annuler', callback_data:'act:menu' }]
+      ]);
+      await reply(chatId, `Budget pour <b>${esc(title)}</b>`, kb);
+      return;
+    }
+  } catch(e) {
+    try { await reply(chatId, 'Erreur: ' + String(e)); } catch {}
+  }
+{
     const { keysForUser, getJSON, setJSON } = await import('./_kv.js');
     const keys = keysForUser(String(userId));
     const tmp = (await getJSON(keys.tmp)) || {};
