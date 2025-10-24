@@ -184,18 +184,38 @@ const tmp = (await getTMP(uid)) || {};
   if (data === 'plan:ok'){
     await setTMP(uid, { ...tmp, step:'secrets' });
     await reply(chatId,
-      "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\nTELEGRAM_BOT_TOKEN=xxxx\nOPENAI_API_KEY=xxxx  *(optionnel pour l’écho-bot)*\nKV_REST_API_URL=xxxx *(optionnel pour l’écho-bot)*\nKV_REST_API_TOKEN=xxxx *(optionnel pour l’écho-bot)*\n\n" +
-      "Tu peux ne fournir que ceux dont tu disposes, je te dirai s’il en manque.",
-      kb([
-        [{ text:'❓ Où trouver les tokens ?', callback_data:'sec:help' }],
-        [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
-      ])
-    );
+  "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\n" +
+  "TELEGRAM_BOT_TOKEN=xxxx\n\n" +
+  "💡 Pour l’écho-bot de test : seul ce token est nécessaire.\n" +
+  "Si tu veux en savoir plus, clique sur le bouton ci-dessous.",
+  kb([
+    [{ text:"❓ Où trouver les tokens ?", callback_data:"sec:help" }],
+    [{ text:"⬅️ Annuler", callback_data:"act:menu" }]
+  ])
+);
     return;
   }
 
   if (data === 'sec:help'){
-    await reply(chatId, "• TELEGRAM_BOT_TOKEN : @BotFather → /newbot → Copier le token.\n• OPENAI_API_KEY : platform.openai.com\n• KV (Upstash) : créer une base REST et récupérer URL & TOKEN.");
+    await reply(chatId,
+  "🔑 *GUIDE DÉTAILLÉ : Où trouver les tokens ?*\n\n" +
+  "📘 *1) TELEGRAM_BOT_TOKEN (obligatoire)*\n" +
+  "  1. Ouvre Telegram.\n" +
+  "  2. Recherche *@BotFather* et démarre la conversation.\n" +
+  "  3. Tape /newbot puis choisis un nom (ex : MonBotTest).\n" +
+  "  4. Choisis un identifiant unique (ex : monbottest_bot).\n" +
+  "  5. Copie le token affiché (ex : 123456789:AA...).\n" +
+  "  6. Colle-le ici sous la forme :\n" +
+  "     TELEGRAM_BOT_TOKEN=123456789:AA...\n\n" +
+  "💡 Ce token suffit pour l’écho-bot minimal.\n\n" +
+  "🤖 *2) OPENAI_API_KEY (optionnelle)*\n" +
+  "  - Sert uniquement si ton projet nécessite l’IA.\n" +
+  "  - Crée-la sur https://platform.openai.com/ (profil → View API Keys).\n\n" +
+  "🗄️ *3) Upstash KV (optionnel)*\n" +
+  "  - Sert uniquement si ton projet a besoin de stockage persistant.\n" +
+  "  - Crée une base sur https://upstash.com (Redis REST API).\n\n" +
+  "📌 *Pour le bot de test, tu peux ignorer tout sauf TELEGRAM_BOT_TOKEN.*"
+);
     return;
   }
 
