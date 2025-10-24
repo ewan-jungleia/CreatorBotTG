@@ -28,7 +28,7 @@ async function getTMP(uid){
   const j = await getJSON(k);
   try{
     if (!j) return null;
-    // Valeur stockée via setJSON(JSON.stringify(val)) -> j est déjà l’objet unwrapped par _kv.js
+    // Valeur stocke via setJSON(JSON.stringify(val)) -> j est dj lobjet unwrapped par _kv.js
     return typeof j.value === 'string' ? JSON.parse(j.value) : j.value || j;
   }catch{ return null; }
 }
@@ -39,16 +39,16 @@ async function setTMP(uid, obj, ttl=1800){
 
 /* ==== UI ==== */
 async function showMenu(chatId){
-  await reply(chatId, 'CreatorBot-TG en ligne ✅\nChoisis une action :', kb([
-    [{ text:'🆕 Nouveau projet', callback_data:'act:new' }, { text:'📁 Projets', callback_data:'act:list' }],
-    [{ text:'💰 Budget', callback_data:'act:budget' }, { text:'🔑 Secrets', callback_data:'act:secrets' }],
-    [{ text:'📦 ZIP', callback_data:'act:zip' }, { text:'♻️ Reset', callback_data:'act:reset' }]
+  await reply(chatId, 'CreatorBot-TG en ligne \nChoisis une action :', kb([
+    [{ text:' Nouveau projet', callback_data:'act:new' }, { text:' Projets', callback_data:'act:list' }],
+    [{ text:' Budget', callback_data:'act:budget' }, { text:' Secrets', callback_data:'act:secrets' }],
+    [{ text:' ZIP', callback_data:'act:zip' }, { text:' Reset', callback_data:'act:reset' }]
   ]));
 }
 
 async function askTitle(chatId, uid){
   await setTMP(uid, { step:'title' });
-  await reply(chatId, 'Titre du projet ?', kb([[{ text:'⬅ Retour menu', callback_data:'act:menu' }]]));
+  await reply(chatId, 'Titre du projet ?', kb([[{ text:' Retour menu', callback_data:'act:menu' }]]));
 }
 
 async function askBudget(chatId, uid){
@@ -56,29 +56,29 @@ async function askBudget(chatId, uid){
   const title = tmp.title || '';
   await setTMP(uid, { step:'budget', title, capCents: tmp.capCents||0, alertStepCents: tmp.alertStepCents||0 });
   await reply(chatId, `Budget pour <b>${esc(title)}</b>`, kb([
-    [{ text:'Cap 10€', callback_data:'b:cap:1000' }, { text:'Cap 20€', callback_data:'b:cap:2000' }],
-    [{ text:'Alerte 1€', callback_data:'b:alert:100' }, { text:'Alerte 2€', callback_data:'b:alert:200' }],
-    [{ text:'OK', callback_data:'b:ok' }, { text:'⬅ Annuler', callback_data:'act:menu' }]
+    [{ text:'Cap 10', callback_data:'b:cap:1000' }, { text:'Cap 20', callback_data:'b:cap:2000' }],
+    [{ text:'Alerte 1', callback_data:'b:alert:100' }, { text:'Alerte 2', callback_data:'b:alert:200' }],
+    [{ text:'OK', callback_data:'b:ok' }, { text:' Annuler', callback_data:'act:menu' }]
   ]));
 }
 
 async function askPrompt(chatId, uid){
   const tmp = await getTMP(uid) || {};
   await setTMP(uid, { step:'prompt', title: tmp.title, capCents: tmp.capCents||0, alertStepCents: tmp.alertStepCents||0 });
-  await reply(chatId, 'Envoie le prompt principal (objectif, contraintes, livrables, etc.)', kb([[{ text:'⬅ Annuler', callback_data:'act:menu' }]]));
+  await reply(chatId, 'Envoie le prompt principal (objectif, contraintes, livrables, etc.)', kb([[{ text:' Annuler', callback_data:'act:menu' }]]));
 }
 
 async function showConfirm(chatId, uid){
   const tmp = await getTMP(uid) || {};
   const summary = tmp.summary || '';
   await setTMP(uid, { ...tmp, step:'confirm' });
-  await reply(chatId, `Résumé compris :\n\n${esc(summary)}\n\nValider ?`, kb([
-    [{ text:'✅ Valider', callback_data:'sum:ok' }, { text:'✏️ Modifier', callback_data:'sum:edit' }],
-    [{ text:'⬅ Annuler', callback_data:'act:menu' }]
+  await reply(chatId, `Rsum compris :\n\n${esc(summary)}\n\nValider ?`, kb([
+    [{ text:' Valider', callback_data:'sum:ok' }, { text:' Modifier', callback_data:'sum:edit' }],
+    [{ text:' Annuler', callback_data:'act:menu' }]
   ]));
 }
 
-/* ==== OpenAI (plan/faisabilité) ==== */
+/* ==== OpenAI (plan/faisabilit) ==== */
 async function askOpenAI(messages){
   const api = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
@@ -97,15 +97,15 @@ async function onSummaryOk(chatId, uid){
   const prompt = tmp.prompt || '';
 
   const sys = `Tu es un architecte logiciel Telegram ultra rigoureux.
-Réponds en français, format clair avec titres **gras** et listes.
-Tu dois fournir: Faisabilité, Plan stratégique (phases), Plan d'action (tâches), Besoins (inputs & secrets), Livrables (code, README, déploiement).
+Rponds en franais, format clair avec titres **gras** et listes.
+Tu dois fournir: Faisabilit, Plan stratgique (phases), Plan d'action (tches), Besoins (inputs & secrets), Livrables (code, README, dploiement).
 Sois concret, pas verbeux.`;
 
   const usr = `Titre: ${title}
 Brief utilisateur:
 ${prompt}`;
 
-  await reply(chatId, 'Je prépare la faisabilité et le plan…');
+  await reply(chatId, 'Je prpare la faisabilit et le plan');
   const plan = await askOpenAI([
     { role:'system', content: sys },
     { role:'user', content: usr }
@@ -115,10 +115,10 @@ ${prompt}`;
   tmp.plan = plan;
   await setTMP(uid, tmp);
 
-  await reply(chatId, `**Faisabilité & Plan pour ${esc(title)}**\n\n${plan}`, kb([
-    [{ text:'✅ Continuer', callback_data:'plan:ok' }],
-    [{ text:'✏️ Modifier le brief', callback_data:'sum:edit' }],
-    [{ text:'⬅️ Annuler', callback_data:'act:menu' }]
+  await reply(chatId, `**Faisabilit & Plan pour ${esc(title)}**\n\n${plan}`, kb([
+    [{ text:' Continuer', callback_data:'plan:ok' }],
+    [{ text:' Modifier le brief', callback_data:'sum:edit' }],
+    [{ text:' Annuler', callback_data:'act:menu' }]
   ]));
 }
 
@@ -132,7 +132,7 @@ async function handleText(chatId, uid, text){
     const title = String(text||'').trim();
     if (!title) { await reply(chatId, 'Envoie un titre valide.'); return; }
     await setTMP(uid, { ...tmp, step:'budget', title });
-    await reply(chatId, `Titre enregistré : <b>${esc(title)}</b>`);
+    await reply(chatId, `Titre enregistr : <b>${esc(title)}</b>`);
     await askBudget(chatId, uid);
     return;
   }
@@ -140,10 +140,10 @@ async function handleText(chatId, uid, text){
   
     if (tmp.step === 'prompt'){
     const userPrompt = String(text||'').trim();
-    await reply(chatId, 'Je réfléchis au résumé…');
+    await reply(chatId, 'Je rflchis au rsum');
     let summary = '';
     try { summary = await summarizePrompt(userPrompt); }
-    catch(e){ summary = `Impossible de résumer: ${String(e)}`; }
+    catch(e){ summary = `Impossible de rsumer: ${String(e)}`; }
 
     await setTMP(uid, {
       step:'confirm',
@@ -163,7 +163,7 @@ async function handleText(chatId, uid, text){
 " .
     "    const tok = (function(t){ const m=/^\s*TELEGRAM_BOT_TOKEN\s*=\s*(\S+)\s*i.exec(t||""); return m?m[1].trim():null; })(text);
 " .
-    "    if (!tok){ await reply(chatId, "Envoie le token au format :\nTELEGRAM_BOT_TOKEN=123456:ABC...\n(ou clique sur ❓ Où trouver les tokens ?)"); return; }
+    "    if (!tok){ await reply(chatId, "Envoie le token au format :\nTELEGRAM_BOT_TOKEN=123456:ABC...\n(ou clique sur  O trouver les tokens ?)"); return; }
 " .
     "    const title = tmp.title || 'EchoBot';
 " .
@@ -192,27 +192,27 @@ const tmp = (await getTMP(uid)) || {};
   if (data.startsWith('b:')){
     const [_, kind, val] = data.split(':');
     if (tmp.step!=='budget'){ await askBudget(chatId, uid); return; }
-    if (kind==='cap'){ await setTMP(uid, { ...tmp, capCents:Number(val) }); await reply(chatId, `Cap défini: ${(Number(val)/100).toFixed(2)} €`); }
-    if (kind==='alert'){ await setTMP(uid, { ...tmp, alertStepCents:Number(val) }); await reply(chatId, `Alerte: ${(Number(val)/100).toFixed(2)} €`); }
+    if (kind==='cap'){ await setTMP(uid, { ...tmp, capCents:Number(val) }); await reply(chatId, `Cap dfini: ${(Number(val)/100).toFixed(2)} `); }
+    if (kind==='alert'){ await setTMP(uid, { ...tmp, alertStepCents:Number(val) }); await reply(chatId, `Alerte: ${(Number(val)/100).toFixed(2)} `); }
     if (kind==='ok'){ await askPrompt(chatId, uid); }
     return;
   }
 
-  // Résumé validé / modifié
+  // Rsum valid / modifi
   if (data === 'sum:ok'){ await onSummaryOk(chatId, uid); return; }
   if (data === 'sum:edit'){ await setTMP(uid, { ...tmp, step:'prompt' }); await reply(chatId, 'Ok, renvoie le prompt principal (objectif, contraintes, livrables, etc.).'); return; }
 
-  // Après plan : demander secrets
+  // Aprs plan : demander secrets
   if (data === 'plan:ok'){
     await setTMP(uid, { ...tmp, step:'secrets' });
     await reply(chatId,
-  "Parfait. Maintenant, envoie-moi les **secrets** nécessaires dans ce format :\n\n" +
+  "Parfait. Maintenant, envoie-moi les **secrets** ncessaires dans ce format :\n\n" +
   "TELEGRAM_BOT_TOKEN=xxxx\n\n" +
-  "💡 Pour l’écho-bot de test : seul ce token est nécessaire.\n" +
+  " Pour lcho-bot de test : seul ce token est ncessaire.\n" +
   "Si tu veux en savoir plus, clique sur le bouton ci-dessous.",
   kb([
-    [{ text:"❓ Où trouver les tokens ?", callback_data:"sec:help" }],
-    [{ text:"⬅️ Annuler", callback_data:"act:menu" }]
+    [{ text:" O trouver les tokens ?", callback_data:"sec:help" }],
+    [{ text:" Annuler", callback_data:"act:menu" }]
   ])
 );
     return;
@@ -220,33 +220,33 @@ const tmp = (await getTMP(uid)) || {};
 
   if (data === 'sec:help'){
     await reply(chatId,
-  "🔑 *GUIDE DÉTAILLÉ : Où trouver les tokens ?*\n\n" +
-  "📘 *1) TELEGRAM_BOT_TOKEN (obligatoire)*\n" +
+  " *GUIDE DTAILL : O trouver les tokens ?*\n\n" +
+  " *1) TELEGRAM_BOT_TOKEN (obligatoire)*\n" +
   "  1. Ouvre Telegram.\n" +
-  "  2. Recherche *@BotFather* et démarre la conversation.\n" +
+  "  2. Recherche *@BotFather* et dmarre la conversation.\n" +
   "  3. Tape /newbot puis choisis un nom (ex : MonBotTest).\n" +
   "  4. Choisis un identifiant unique (ex : monbottest_bot).\n" +
-  "  5. Copie le token affiché (ex : 123456789:AA...).\n" +
+  "  5. Copie le token affich (ex : 123456789:AA...).\n" +
   "  6. Colle-le ici sous la forme :\n" +
   "     TELEGRAM_BOT_TOKEN=123456789:AA...\n\n" +
-  "💡 Ce token suffit pour l’écho-bot minimal.\n\n" +
-  "🤖 *2) OPENAI_API_KEY (optionnelle)*\n" +
-  "  - Sert uniquement si ton projet nécessite l’IA.\n" +
-  "  - Crée-la sur https://platform.openai.com/ (profil → View API Keys).\n\n" +
-  "🗄️ *3) Upstash KV (optionnel)*\n" +
+  " Ce token suffit pour lcho-bot minimal.\n\n" +
+  " *2) OPENAI_API_KEY (optionnelle)*\n" +
+  "  - Sert uniquement si ton projet ncessite lIA.\n" +
+  "  - Cre-la sur https://platform.openai.com/ (profil  View API Keys).\n\n" +
+  " *3) Upstash KV (optionnel)*\n" +
   "  - Sert uniquement si ton projet a besoin de stockage persistant.\n" +
-  "  - Crée une base sur https://upstash.com (Redis REST API).\n\n" +
-  "📌 *Pour le bot de test, tu peux ignorer tout sauf TELEGRAM_BOT_TOKEN.*"
+  "  - Cre une base sur https://upstash.com (Redis REST API).\n\n" +
+  " *Pour le bot de test, tu peux ignorer tout sauf TELEGRAM_BOT_TOKEN.*"
 );
     return;
   }
 
   // Divers (placeholders)
-  if (data === 'act:list'){ await reply(chatId,'Projets (à venir).'); return; }
-  if (data === 'act:budget'){ await reply(chatId,'Budget global (à venir).'); return; }
-  if (data === 'act:secrets'){ await reply(chatId,'Secrets (à venir).'); return; }
-  if (data === 'act:zip'){ await reply(chatId,'ZIP (à venir).'); return; }
-  if (data === 'act:reset'){ await setTMP(uid, null); await reply(chatId,'État réinitialisé.'); await showMenu(chatId); return; }
+  if (data === 'act:list'){ await reply(chatId,'Projets ( venir).'); return; }
+  if (data === 'act:budget'){ await reply(chatId,'Budget global ( venir).'); return; }
+  if (data === 'act:secrets'){ await reply(chatId,'Secrets ( venir).'); return; }
+  if (data === 'act:zip'){ await reply(chatId,'ZIP ( venir).'); return; }
+  if (data === 'act:reset'){ await setTMP(uid, null); await reply(chatId,'tat rinitialis.'); await showMenu(chatId); return; }
 
   await showMenu(chatId);
 }
@@ -256,40 +256,40 @@ const tmp = (await getTMP(uid)) || {};
 /* GUIDE_TOKENS_START */
 
 const TOKENS_GUIDE = [
-  '🔑 *GUIDE DÉTAILLÉ : Où trouver les tokens ?*\n',
+  ' *GUIDE DTAILL : O trouver les tokens ?*\n',
   '',
-  '📘 *1) TELEGRAM_BOT_TOKEN (obligatoire)*',
+  ' *1) TELEGRAM_BOT_TOKEN (obligatoire)*',
   '  1. Ouvre Telegram.',
-  '  2. Cherche le compte *@BotFather* et démarre la conversation.',
+  '  2. Cherche le compte *@BotFather* et dmarre la conversation.',
   '  3. Tape /newbot puis choisis un nom pour ton bot (ex: "Mon Bot Test").',
   '  4. Choisis un identifiant unique (doit finir par "bot", ex: monbottest_bot).',
-  '  5. Copie le token affiché (format : 123456789:AA... ).',
+  '  5. Copie le token affich (format : 123456789:AA... ).',
   '  6. Colle-le ici sous la forme :',
   '     TELEGRAM_BOT_TOKEN=123456789:AA... ',
   '',
-  '💡 *Ce token permet de lier ton projet au bot Telegram.*',
+  ' *Ce token permet de lier ton projet au bot Telegram.*',
   '',
-  '🤖 *2) OPENAI_API_KEY (optionnelle)*',
-  '  - Sert uniquement si ton futur projet utilise l’IA (ChatGPT, génération de texte, etc.).',
+  ' *2) OPENAI_API_KEY (optionnelle)*',
+  '  - Sert uniquement si ton futur projet utilise lIA (ChatGPT, gnration de texte, etc.).',
   '  1. Va sur https://platform.openai.com/',
-  '  2. Connecte-toi ou crée un compte.',
-  '  3. Clique sur ton profil (en haut à droite) → *View API Keys*.',
+  '  2. Connecte-toi ou cre un compte.',
+  '  3. Clique sur ton profil (en haut  droite)  *View API Keys*.',
   '  4. Clique sur *Create new secret key*.',
-  '  5. Copie la clé (format : sk-proj-... ).',
+  '  5. Copie la cl (format : sk-proj-... ).',
   '  6. Colle-la ici sous la forme :',
   '     OPENAI_API_KEY=sk-proj-... ',
   '',
-  '🗄️ *3) Upstash KV (optionnel)*',
-  '  - Sert uniquement pour stocker ou partager des données entre bots.',
+  ' *3) Upstash KV (optionnel)*',
+  '  - Sert uniquement pour stocker ou partager des donnes entre bots.',
   '  1. Va sur https://upstash.com/',
-  '  2. Crée un compte (Google, GitHub ou e-mail).',
-  '  3. Clique sur *Create Database* → choisis *Redis REST API*.',
-  '  4. Une fois la base créée, clique sur *REST API*.',
+  '  2. Cre un compte (Google, GitHub ou e-mail).',
+  '  3. Clique sur *Create Database*  choisis *Redis REST API*.',
+  '  4. Une fois la base cre, clique sur *REST API*.',
   '  5. Copie :',
-  '     - REST URL  → à coller ici : KV_REST_API_URL=...',
-  '     - REST TOKEN → à coller ici : KV_REST_API_TOKEN=...',
+  '     - REST URL    coller ici : KV_REST_API_URL=...',
+  '     - REST TOKEN   coller ici : KV_REST_API_TOKEN=...',
   '',
-  '📌 *Pour l’écho-bot de test : seul TELEGRAM_BOT_TOKEN est nécessaire.*'
+  ' *Pour lcho-bot de test : seul TELEGRAM_BOT_TOKEN est ncessaire.*'
 ].join('\n');
 
 /* GUIDE_TOKENS_END */
@@ -306,7 +306,7 @@ export default async function handler(req,res){
     if (msg && msg.text){
       const chatId = msg.chat?.id;
       const fromId = msg.from?.id;
-      if (!isAdmin(fromId)){ await reply(chatId,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      if (!isAdmin(fromId)){ await reply(chatId,' Accs refus  bot priv.'); return res.json({ok:true}); }
       if (msg.text === '/start'){ await showMenu(chatId); return res.json({ok:true}); }
       await handleText(chatId, fromId, msg.text);
       return res.json({ ok:true });
@@ -315,7 +315,7 @@ export default async function handler(req,res){
     if (cb){
       const chatId = cb.message?.chat?.id;
       const fromId = cb.from?.id;
-      if (!isAdmin(fromId)){ await reply(chatId,'❌ Accès refusé – bot privé.'); return res.json({ok:true}); }
+      if (!isAdmin(fromId)){ await reply(chatId,' Accs refus  bot priv.'); return res.json({ok:true}); }
       await handleCallback(chatId, fromId, cb.data||'');
       await fetch(`${API}/answerCallbackQuery`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ callback_query_id: cb.id }) });
       return res.json({ ok:true });
@@ -349,8 +349,8 @@ async function _hookKvEcho(chatId, text, title) {
   } else {
     await reply(
       chatId,
-      "✅ Token reçu. Cliquez sur « Générer le projet ».",
-      kb([[{ text:"🚀 Générer le projet", callback_data:"echo:gen" }]])
+      " Token reu. Cliquez sur  Gnrer le projet .",
+      kb([[{ text:" Gnrer le projet", callback_data:"echo:gen" }]])
     );
   }
   return true;
@@ -359,8 +359,8 @@ async function _hookKvEcho(chatId, text, title) {
 
 async function echoReady(chatId, title, token){
   await reply(chatId,
-    "✅ Token reçu. Prêt à générer « "+(title||"EchoBot")+" ». ",
-    kb([[{text:"🚀 Générer le projet", callback_data:"echo:gen"}]])
+    " Token reu. Prt  gnrer  "+(title||"EchoBot")+" . ",
+    kb([[{text:" Gnrer le projet", callback_data:"echo:gen"}]])
   );
 }
 
