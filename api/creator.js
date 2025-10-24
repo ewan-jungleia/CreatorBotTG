@@ -314,3 +314,23 @@ function parseSecrets(text){
   });
   return out;
 }
+
+
+async function _hookKvEcho(chatId, text, title) {
+  if (!text) return false;
+  const m = text.match(/\bTELEGRAM_BOT_TOKEN\s*=\s*(\S+)/i);
+  if (!m) return false;
+  const userTok = m[1].trim();
+
+  if (typeof echoReady === "function") {
+    await echoReady(chatId, title || "EchoBot", userTok);
+  } else {
+    await reply(
+      chatId,
+      "✅ Token reçu. Cliquez sur « Générer le projet ».",
+      kb([[{ text:"🚀 Générer le projet", callback_data:"echo:gen" }]])
+    );
+  }
+  return true;
+}
+
