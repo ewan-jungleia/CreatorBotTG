@@ -212,6 +212,14 @@ export default async function handler(req, res){
       const fromId = msg.from?.id;
       if (!isAdmin(fromId)){ await tgSend(chatId,"❌ Accès refusé – bot privé."); return res.json({ok:true}); }
       if (msg.text === "/start"){ await showMenu(chatId); return res.json({ok:true}); }
+else if (msg.text === '/diag') {
+  const k = process.env.OPENAI_API_KEY || '';
+  const has = !!k;
+  const len = k.length;
+  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  await reply(chatId, '🔍 Diag OpenAI → clé='+(has?'✅ OK':'❌ absente')+' (len='+len+'), model='+model);
+  return res.json({ ok:true });
+}
       await handleText(chatId, fromId, msg.text);
       return res.json({ ok:true });
     }
