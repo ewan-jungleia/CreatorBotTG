@@ -1,0 +1,287 @@
+===== DIAG CreatorBotTG =====
+date: Sam 25 oct 2025 14:09:51 CEST
+
+## Versions
+- node: v24.7.0
+- vercel: Vercel CLI 48.1.4
+48.1.4
+
+## Git
+- branch: main
+- commit: e7d20fa
+
+## main...origin/main
+?? CREATOR_DIAG_20251025-140951.txt
+?? api/creator.js.bak_20251025-135102
+?? api/creator.js.bak_20251025-140403
+?? fix-plan.mjs
+?? fix3.mjs
+
+## Arborescence (top)
+total 80
+drwxr-xr-x  15 ewanlanglais  staff   480 25 oct 14:09 .
+drwxr-x---+ 41 ewanlanglais  staff  1312 23 oct 22:51 ..
+drwxr-xr-x  15 ewanlanglais  staff   480 25 oct 14:09 .git
+-rw-r--r--   1 ewanlanglais  staff     8 23 oct 22:37 .gitignore
+drwxr-xr-x   4 ewanlanglais  staff   128 23 oct 20:29 .vercel
+-rw-r--r--   1 ewanlanglais  staff   357 25 oct 14:09 CREATOR_DIAG_20251025-140951.txt
+drwxr-xr-x  23 ewanlanglais  staff   736 25 oct 14:04 api
+-rw-r--r--   1 ewanlanglais  staff  1290 24 oct 21:33 fix-creator.mjs
+-rw-r--r--   1 ewanlanglais  staff  2029 25 oct 14:04 fix-plan.mjs
+-rw-r--r--   1 ewanlanglais  staff  2152 25 oct 13:44 fix.mjs
+-rw-r--r--   1 ewanlanglais  staff  3392 25 oct 13:51 fix3.mjs
+-rw-r--r--   1 ewanlanglais  staff   204 24 oct 15:35 package.json
+-rw-r--r--   1 ewanlanglais  staff  2530 24 oct 19:34 patch-secrets.cjs
+-rw-r--r--   1 ewanlanglais  staff  1629 24 oct 20:52 patch-secrets.mjs
+-rw-r--r--   1 ewanlanglais  staff  2893 24 oct 18:53 patch-secrets2.mjs
+
+## Fichiers API
+api/_kv.js
+api/_ai.js
+api/creator.js
+api/zip.js
+api/builder.js
+api/diag.js
+
+## package.json
+{
+  "name": "creator-bot-tg",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "adm-zip": "0.5.10",
+    "jszip": "^3.10.1"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}
+
+## vercel.json
+(absent)
+
+## .vercel/project.json (si présent)
+{"projectId":"prj_6TSXPLCOS7feiWYPG96vI2dzMh0g","orgId":"team_Fbiq9Lbr0M8425oMFKaeFSne","projectName":"creator-bot-tg"}
+## api/creator.js — premières 140 lignes
+     1	/**
+     2	 * CreatorBotTG — handler complet stable (ESM)
+     3	 * Flow:
+     4	 *  /start -> menu
+     5	 *  🆕 Nouveau projet -> Titre -> 💰 Budget -> Prompt -> Résumé (Valider / Modifier)
+     6	 *  Après "Valider" -> demande des secrets -> parse TELEGRAM_BOT_TOKEN -> bouton 🚀 Générer le projet
+     7	 *  (echo:gen renvoie "ZIP (à venir)" pour l’instant)
+     8	 */
+     9	
+    10	const API = "https://api.telegram.org/bot" + (process.env.TELEGRAM_BOT_TOKEN || "");
+    11	const ADMIN = String(process.env.ADMIN_TELEGRAM_ID || "").trim();
+    12	
+    13	function kb(rows){ return { reply_markup:{ inline_keyboard: rows } }; }
+    14	function esc(s){ return String(s||"").replace(/[<&>]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c])); }
+    15	function isAdmin(uid){ return ADMIN ? String(uid)===ADMIN : true; }
+    16	
+    17	async function tgSend(chatId, text, extra){
+    18	  await fetch(API + "/sendMessage", {
+    19	    method:"POST",
+    20	    headers:{ "Content-Type":"application/json" },
+    21	    body: JSON.stringify({ chat_id: chatId, text, parse_mode:"HTML", ...(extra||{}) })
+    22	  });
+    23	}
+    24	
+    25	/* ==== Mémoire volatile par utilisateur (KV pourra remplacer ensuite) ==== */
+    26	const TMP = new Map(); // uid -> { step, title, capCents, alertStepCents, prompt, summary, echoTok }
+    27	
+    28	/* ==== UI ==== */
+    29	async function showMenu(chatId){
+    30	  await tgSend(chatId,
+    31	    "CreatorBot-TG en ligne ✅\nChoisis une action :",
+    32	    kb([
+    33	      [ { text:"🆕 Nouveau projet", callback_data:"act:new" }, { text:"📁 Projets", callback_data:"act:list" } ],
+    34	      [ { text:"💰 Budget", callback_data:"act:budget" }, { text:"🔑 Secrets", callback_data:"act:secrets" } ],
+    35	      [ { text:"♻️ Reset", callback_data:"act:reset" } ]
+    36	    ])
+    37	  );
+    38	}
+    39	
+    40	async function askTitle(chatId, uid){
+    41	  TMP.set(uid, { step:"title" });
+    42	  await tgSend(chatId, "Titre du projet ?", kb([[ { text:"⬅ Retour menu", callback_data:"act:menu" } ]]));
+    43	}
+    44	
+    45	async function askBudget(chatId, uid){
+    46	  const st = TMP.get(uid) || {};
+    47	  const title = st.title || "";
+    48	  TMP.set(uid, { ...st, step:"budget" });
+    49	  await tgSend(chatId,
+    50	    "💰 Budget pour <b>"+esc(title)+"</b>",
+    51	    kb([
+    52	      [ { text:"Cap 10€", callback_data:"b:cap:1000" }, { text:"Cap 20€", callback_data:"b:cap:2000" } ],
+    53	      [ { text:"Alerte 1€", callback_data:"b:alert:100" }, { text:"Alerte 2€", callback_data:"b:alert:200" } ],
+    54	      [ { text:"OK", callback_data:"b:ok" }, { text:"⬅ Annuler", callback_data:"act:menu" } ]
+    55	    ])
+    56	  );
+    57	}
+    58	
+    59	async function askPrompt(chatId, uid){
+    60	  const st = TMP.get(uid) || {};
+    61	  TMP.set(uid, { ...st, step:"prompt" });
+    62	  await tgSend(chatId,
+    63	    "Envoie le prompt principal (objectif, contraintes, livrables, etc.)",
+    64	    kb([[ { text:"⬅ Annuler", callback_data:"act:menu" } ]])
+    65	  );
+    66	}
+    67	
+    68	function summarizeLocally(title, prompt){
+    69	  const lines = String(prompt||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    70	  const bullets = lines.map(l=>"- " + l).join("\n");
+    71	  return (
+    72	    "Titre: " + (title || "Projet") + "\n" +
+    73	    "Brief utilisateur:\n" + (bullets || "- (vide)")
+    74	  );
+    75	}
+    76	
+    77	async function showConfirm(chatId, uid){
+    78	  const st = TMP.get(uid) || {};
+    79	  const sum = st.summary || summarizeLocally(st.title, st.prompt);
+    80	  TMP.set(uid, { ...st, step:"confirm", summary: sum });
+    81	  await tgSend(chatId,
+    82	    "Résumé compris :\n\n" + esc(sum) + "\n\nValider ?",
+    83	    kb([
+    84	      [ { text:"✅ Valider", callback_data:"sum:ok" }, { text:"✏️ Modifier", callback_data:"sum:edit" } ],
+    85	      [ { text:"⬅ Annuler", callback_data:"act:menu" } ]
+    86	    ])
+    87	  );
+    88	}
+    89	
+    90	/* ==== Étape Secrets ==== */
+    91	async function askSecrets(chatId, uid){
+    92	  const txt =
+    93	    "Parfait. Maintenant, envoie-moi les <b>secrets</b> nécessaires dans ce format :\n\n" +
+    94	    "TELEGRAM_BOT_TOKEN=xxxx\n\n" +
+    95	    "💡 Pour l’écho-bot de test : <i>seul ce token est nécessaire</i>.\n" +
+    96	    "Si tu veux en savoir plus, clique sur le bouton ci-dessous.";
+    97	  TMP.set(uid, { ...(TMP.get(uid)||{}), step:"secrets" });
+    98	  await tgSend(chatId, txt, kb([
+    99	    [ { text:"❓ Où trouver les tokens ?", callback_data:"sec:help" } ],
+   100	    [ { text:"⬅️ Annuler", callback_data:"act:menu" } ]
+   101	  ]));
+   102	}
+   103	
+   104	function parseTelegramTokenFromText(text){
+   105	  const m = /\bTELEGRAM_BOT_TOKEN\s*=\s*(\S+)/i.exec(String(text||""));
+   106	  return m ? m[1].trim() : null;
+   107	}
+   108	
+   109	async function onTokenReceived(chatId, uid, tok){
+   110	  const st = TMP.get(uid) || {};
+   111	  TMP.set(uid, { ...st, echoTok: tok, step:"secrets" }); // on reste dans l’étape
+   112	  await tgSend(
+   113	    chatId,
+   114	    "✅ Token reçu. Prêt à générer « " + esc(st.title || "EchoBot") + " ». ",
+   115	    kb([[ { text:"🚀 Générer le projet", callback_data:"echo:gen" } ]])
+   116	  );
+   117	}
+   118	
+   119	/* ==== Handlers texte & callbacks ==== */
+   120	async function handleText(chatId, uid, text){
+   121	  const st = TMP.get(uid);
+   122	
+   123	  if (!st){ await showMenu(chatId); return; }
+   124	
+   125	  if (st.step === "title"){
+   126	    const title = String(text||"").trim();
+   127	    if (!title){ await tgSend(chatId, "Envoie un titre valide."); return; }
+   128	    TMP.set(uid, { step:"budget", title });
+   129	    await tgSend(chatId, "Titre enregistré : <b>"+esc(title)+"</b>");
+   130	    await askBudget(chatId, uid);
+   131	    return;
+   132	  }
+   133	
+   134	  if (st.step === "prompt"){
+   135	    const userPrompt = String(text||"").trim();
+   136	    const summary = summarizeLocally(st.title, userPrompt);
+   137	    TMP.set(uid, { ...st, step:"confirm", prompt: userPrompt, summary });
+   138	    await showConfirm(chatId, uid);
+   139	    return;
+   140	  }
+
+## api/creator.js — handler / webhook (autour du routeur)
+
+## api/creator.js — bloc tmp.step==='prompt' (résumé)
+
+## api/creator.js — onSummaryOk / plan OpenAI
+    90	/* ==== Étape Secrets ==== */
+    91	async function askSecrets(chatId, uid){
+    92	  const txt =
+    93	    "Parfait. Maintenant, envoie-moi les <b>secrets</b> nécessaires dans ce format :\n\n" +
+    94	    "TELEGRAM_BOT_TOKEN=xxxx\n\n" +
+    95	    "💡 Pour l’écho-bot de test : <i>seul ce token est nécessaire</i>.\n" +
+    96	    "Si tu veux en savoir plus, clique sur le bouton ci-dessous.";
+    97	  TMP.set(uid, { ...(TMP.get(uid)||{}), step:"secrets" });
+    98	  await tgSend(chatId, txt, kb([
+    99	    [ { text:"❓ Où trouver les tokens ?", callback_data:"sec:help" } ],
+   100	    [ { text:"⬅️ Annuler", callback_data:"act:menu" } ]
+   101	  ]));
+   102	}
+   103	
+   104	function parseTelegramTokenFromText(text){
+   105	  const m = /\bTELEGRAM_BOT_TOKEN\s*=\s*(\S+)/i.exec(String(text||""));
+   106	  return m ? m[1].trim() : null;
+   107	}
+   108	
+   109	async function onTokenReceived(chatId, uid, tok){
+   110	  const st = TMP.get(uid) || {};
+   111	  TMP.set(uid, { ...st, echoTok: tok, step:"secrets" }); // on reste dans l’étape
+   112	  await tgSend(
+   113	    chatId,
+   114	    "✅ Token reçu. Prêt à générer « " + esc(st.title || "EchoBot") + " ». ",
+   115	    kb([[ { text:"🚀 Générer le projet", callback_data:"echo:gen" } ]])
+   116	  );
+   117	}
+   118	
+   119	/* ==== Handlers texte & callbacks ==== */
+   120	async function handleText(chatId, uid, text){
+   121	  const st = TMP.get(uid);
+   122	
+   123	  if (!st){ await showMenu(chatId); return; }
+   124	
+   125	  if (st.step === "title"){
+   126	    const title = String(text||"").trim();
+   127	    if (!title){ await tgSend(chatId, "Envoie un titre valide."); return; }
+   128	    TMP.set(uid, { step:"budget", title });
+   129	    await tgSend(chatId, "Titre enregistré : <b>"+esc(title)+"</b>");
+   130	    await askBudget(chatId, uid);
+
+## api/creator.js — utilitaires de token
+6: *  Après "Valider" -> demande des secrets -> parse TELEGRAM_BOT_TOKEN -> bouton 🚀 Générer le projet
+10:const API = "https://api.telegram.org/bot" + (process.env.TELEGRAM_BOT_TOKEN || "");
+94:    "TELEGRAM_BOT_TOKEN=xxxx\n\n" +
+105:  const m = /\bTELEGRAM_BOT_TOKEN\s*=\s*(\S+)/i.exec(String(text||""));
+145:    await tgSend(chatId, "Format attendu :\nTELEGRAM_BOT_TOKEN=123:AA...");
+182:      "1) <b>TELEGRAM_BOT_TOKEN</b> (obligatoire)\n" +
+185:      " - Colle ici : TELEGRAM_BOT_TOKEN=123:AA...\n\n" +
+
+## Test HTTP local → handler (POST /api/creator)
+HTTP/2 200 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json; charset=utf-8
+date: Sat, 25 Oct 2025 12:09:54 GMT
+etag: W/"b-Ai2R8hgEarLmHKwesT1qcY913ys"
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+x-vercel-cache: MISS
+x-vercel-id: cdg1::iad1::8w74t-1761394193060-881aed1fcfea
+content-length: 11
+
+{"ok":true}
+## Telegram getWebhookInfo
+{"ok":true,"result":{"url":"https://creator-bot-tg.vercel.app/api/creator","has_custom_certificate":false,"pending_update_count":0,"last_error_date":1761340459,"last_error_message":"Wrong response from the webhook: 500 Internal Server Error","max_connections":40,"ip_address":"216.198.79.3","allowed_updates":["message","callback_query"]}}
+## Telegram setWebhook (répose courante)
+{"ok":true,"result":true,"description":"Webhook was set"}
+## Telegram getWebhookInfo (after set)
+{"ok":true,"result":{"url":"https://creator-bot-tg.vercel.app/api/creator","has_custom_certificate":false,"pending_update_count":0,"max_connections":40,"ip_address":"216.198.79.3","allowed_updates":["message","callback_query"]}}
+## Logs Vercel (sur le dernier déploiement)
+Vercel CLI 48.1.4
+Error: unknown or unexpected option: --num
+
+===== FIN DIAG =====
